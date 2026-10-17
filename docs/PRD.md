@@ -619,6 +619,22 @@ unless `naming=False`, and `to_csi` accepts override maps for irregular singular
     (e.g. `[_from, type]`, `[_to, type, validFrom]`). Report which
     fields participate, whether the index is `unique` / `sparse`, and
     classify the access pattern (`out-edge`, `in-edge`, `both`).
+
+    An index whose trailing fields include an array expansion (`[*]`) is
+    not a traversal-safe VCI: a persistent index stores one entry per
+    element and a traversal scans all of them, so it returns each edge
+    once per element with no error. Such an index is reported with
+    `traversalSafe: false`, risk `ARRAY_EXPANSION_DUPLICATES_TRAVERSAL_ROWS`
+    and its `[*]` fields under `arrayExpandedFields` (not
+    `discriminatorFields`), is named in `metadata.vci.warnings`, does not
+    count toward the access pattern (`accessPattern` names only directions
+    covered by traversal-safe indexes, and is omitted when there are none),
+    and never makes a relationship a `vciCandidate` on its own. It remains
+    correct for pattern-match lookups on the edge collection. Integer
+    trailing fields (e.g. bitmask label columns) are not flagged, because
+    the schema cannot show they are bitmasks. **Implementation:**
+    `schema_analyzer/vci.py` (`_index_level_vci`, `detect_vci`);
+    `tests/test_vci.py`.
   - **Schema-level:** edge attributes that duplicate properties from
     their endpoint vertices (denormalisation for VCI lookups). Report
     the duplicated field, source vertex collection, and duplication
