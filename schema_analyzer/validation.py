@@ -54,10 +54,11 @@ ANALYSIS_OUTPUT_SCHEMA: dict[str, Any] = {
                         "type": "object",
                         "required": ["style"],
                         "properties": {
-                            "style": {"type": "string", "enum": ["COLLECTION", "LABEL"]},
+                            "style": {"type": "string", "enum": ["COLLECTION", "LABEL", "LABELS"]},
                             "collectionName": {"type": "string"},
                             "typeField": {"type": "string"},
                             "typeValue": {"type": "string"},
+                            "labelsField": {"type": "string"},
                             "aliases": {"type": "array", "items": {"type": "string"}},
                             "indexes": {
                                 "type": "array",

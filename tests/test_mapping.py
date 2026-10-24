@@ -54,3 +54,10 @@ def test_invalid_identifier_rejected():
     pm = PhysicalMapping(entities={"User": {"style": "COLLECTION", "collectionName": "users"}})
     with pytest.raises(ValueError):
         pm.aql_entity_match(variable="u; RETURN 1", entity_type="User")
+
+
+def test_aql_entity_match_labels():
+    pm = PhysicalMapping(entities={"Customer": {"style": "LABELS", "collectionName": "nodes", "labelsField": "labels"}})
+    out = pm.aql_entity_match(variable="n", entity_type="Customer")
+    assert out["query"] == "FOR n IN @@collection FILTER @label IN n[@labelsField]"
+    assert out["bind_vars"] == {"@collection": "nodes", "labelsField": "labels", "label": "Customer"}

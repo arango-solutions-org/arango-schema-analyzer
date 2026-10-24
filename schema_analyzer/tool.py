@@ -266,13 +266,13 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
             )
 
             raw_strategy = analysis_options.get("entityStrategy")
-            if raw_strategy is not None and raw_strategy not in ("auto", "collection"):
+            if raw_strategy is not None and raw_strategy not in ("auto", "collection", "labels"):
                 return {
                     "ok": False,
                     "error": {
                         "code": "INVALID_REQUEST",
-                        "message": "analysisOptions.entityStrategy must be 'auto' or "
-                        f"'collection', got {raw_strategy!r}",
+                        "message": "analysisOptions.entityStrategy must be 'auto', 'collection' or "
+                        f"'labels', got {raw_strategy!r}",
                     },
                 }
             # Relational-pattern and taxonomy enrichment (PRD §6.2 / §6.3). Both default

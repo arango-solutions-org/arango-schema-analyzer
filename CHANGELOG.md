@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`entityStrategy: "labels"` maps label arrays to a `LABELS` entity style.** Opt-in
+  (`analysisOptions.entityStrategy` / Python `entity_strategy="labels"`); behaves as `auto`
+  except that a collection whose type field holds label arrays, with sampled nodes carrying
+  more than one label, maps each primary label to
+  `{"style": "LABELS", "collectionName", "labelsField", "typeValue"}`, matched as
+  `typeValue IN doc[labelsField]`, so a node with several labels matches each of them.
+  Conceptual output is unchanged, and `auto` keeps emitting `LABEL`. `PhysicalMapping.aql_entity_match`
+  compiles the style; the response, request and CSI schemas (both copies) admit it. The
+  shape is shared with arango-query-core and arango-gql-gateway.
+
 ## 0.16.0 — 2026-10-21
 
 A minor version: the singularizer change below alters output, and arango-sparql-py's

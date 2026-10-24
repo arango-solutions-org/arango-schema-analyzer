@@ -94,7 +94,7 @@
         "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000, "default": 60000 },
         "sampleLimitPerCollection": { "type": "integer", "minimum": 0, "maximum": 1000, "default": 0 },
         "includeSamplesInSnapshot": { "type": "boolean", "default": false },
-        "entityStrategy": { "type": "string", "enum": ["auto", "collection"], "default": "auto" },
+        "entityStrategy": { "type": "string", "enum": ["auto", "collection", "labels"], "default": "auto" },
         "detectForeignKeys": {
           "type": "boolean",
           "default": false,

@@ -6,7 +6,7 @@ from typing import Any, Literal
 from .errors import SchemaAnalyzerError
 from .utils import assert_aql_identifier
 
-EntityMappingStyle = Literal["COLLECTION", "LABEL"]
+EntityMappingStyle = Literal["COLLECTION", "LABEL", "LABELS"]
 RelationshipMappingStyle = Literal[
     "DEDICATED_COLLECTION",
     "GENERIC_WITH_TYPE",
@@ -99,6 +99,24 @@ class PhysicalMapping:
             bind_vars["typeValue"] = type_value
             return {
                 "query": f"FOR {variable} IN @@collection FILTER {variable}[@typeField] == @typeValue",
+                "bind_vars": bind_vars,
+            }
+
+        if style == "LABELS":
+            # Labels held in an array field of a shared collection (a node may carry several).
+            collection_name = mapping.get("collectionName")
+            labels_field = mapping.get("labelsField")
+            label = mapping.get("typeValue") or entity_type
+            if not (collection_name and labels_field):
+                raise SchemaAnalyzerError(
+                    f"LABELS mapping requires collectionName, labelsField for: {entity_type}",
+                    code="INVALID_MAPPING",
+                )
+            bind_vars["@collection"] = collection_name
+            bind_vars["labelsField"] = labels_field
+            bind_vars["label"] = label
+            return {
+                "query": f"FOR {variable} IN @@collection FILTER @label IN {variable}[@labelsField]",
                 "bind_vars": bind_vars,
             }
 

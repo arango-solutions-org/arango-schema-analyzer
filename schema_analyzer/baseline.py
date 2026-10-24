@@ -337,7 +337,9 @@ def _build_property_mapping(props: list[dict[str, Any]]) -> dict[str, dict[str, 
     return mapping
 
 
-def infer_baseline_from_snapshot(snapshot: dict[str, Any], *, collection_per_entity: bool = False) -> dict[str, Any]:
+def infer_baseline_from_snapshot(
+    snapshot: dict[str, Any], *, collection_per_entity: bool = False, multi_label: bool = False
+) -> dict[str, Any]:
     """
     Deterministic baseline inference from a physical schema snapshot.
 
@@ -352,6 +354,14 @@ def infer_baseline_from_snapshot(snapshot: dict[str, Any], *, collection_per_ent
     property-graph schema (one collection per type) where the collections
     already *are* the types, so attribute fields (e.g. ``region``) must not be
     mistaken for type tags. Default (False) preserves the auto LPG/PG heuristic.
+
+    When ``multi_label`` is True, a collection whose type field holds label arrays
+    (nodes with more than one label were sampled) maps each primary label to a
+    ``LABELS``-style entity — ``{"style": "LABELS", "collectionName", "labelsField",
+    "typeValue"}``, matched as ``typeValue IN doc[labelsField]`` — instead of
+    ``LABEL``, so a node carrying several labels matches each of them. Conceptual
+    output (aliases, subtype proposals, facets) is unchanged. Default (False)
+    preserves today's ``LABEL`` output.
 
     ``LABEL``-style entity mappings whose PascalCase name is lossy relative to
     the raw discriminator value (``FIN_METRIC`` → ``FINMETRIC``) carry the raw
@@ -428,6 +438,15 @@ def infer_baseline_from_snapshot(snapshot: dict[str, Any], *, collection_per_ent
                     "typeField": type_field,
                     "typeValue": raw,
                 }
+                # shortcut: label arrays are recognised by sampled multi-label nodes (label_cooccurrence);
+                # a collection whose arrays all hold one label stays LABEL, upgrade if that matters.
+                if multi_label and cooccurrence:
+                    ent_mapping = {
+                        "style": "LABELS",
+                        "collectionName": collection_name,
+                        "labelsField": type_field,
+                        "typeValue": raw,
+                    }
                 # PascalCase collapses separators (FIN_METRIC → FINMETRIC),
                 # so the raw discriminator value — the label a Cypher author
                 # actually sees in the data — is kept as an accepted alias.
