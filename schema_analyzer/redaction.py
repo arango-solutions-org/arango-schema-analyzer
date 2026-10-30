@@ -39,12 +39,23 @@ Three independent, composable modes are supported:
   token pattern ``redacted_field_<int>`` is un-masked by exact regex match, it is
   robust to the tokens appearing standalone (property names) or embedded in prose
   (descriptions).
+* ``screen_field_values`` — the per-field form of ``mask_field_values``. The
+  caller passes a function ``(collection, field, values) -> bool``; it is asked
+  once per field that has sampled values in a collection, and a field it picks
+  has its values masked the way ``mask_field_values`` masks every field (same
+  ``<redacted>:N`` tokens, also in ``by_type`` keys and edge endpoints), and its
+  values in sample documents replaced by ``<redacted>``. Every other value goes
+  out unchanged, so a caller can withhold personal data and still let the model
+  see type values like ``"Person"``. Library-only: a function cannot come from a
+  request, so ``from_dict`` never sets it. Ignored when ``mask_field_values``
+  already masks everything.
 """
 
 from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,16 +70,27 @@ _SYSTEM_FIELD_NAMES = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 
 _FIELD_TOKEN_RE = re.compile(re.escape(FIELD_NAME_TOKEN_PREFIX) + r"\d+")
 
+_VALUE_COUNT_KEYS = ("sample_field_value_counts", "sample_field_value_overflow")
+
+#: ``(collection, field, sampled values) -> True`` withholds that field's values.
+FieldValueScreen = Callable[[str, str, list[str]], bool]
+
 
 @dataclass(frozen=True)
 class RedactionOptions:
     strip_samples: bool = False
     mask_field_values: bool = False
     mask_field_names: bool = False
+    screen_field_values: FieldValueScreen | None = None
 
     @property
     def active(self) -> bool:
-        return self.strip_samples or self.mask_field_values or self.mask_field_names
+        return (
+            self.strip_samples
+            or self.mask_field_values
+            or self.mask_field_names
+            or self.screen_field_values is not None
+        )
 
     @classmethod
     def from_dict(cls, data: Any) -> RedactionOptions:
@@ -104,6 +126,72 @@ def _collect_sensitive_values(collections: list[Any]) -> dict[str, str]:
         if isinstance(observed, dict) and isinstance(observed.get("by_type"), dict):
             values.update(str(k) for k in observed["by_type"])
     return {v: f"{REDACTED_VALUE_TOKEN}:{i}" for i, v in enumerate(sorted(values))}
+
+
+def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
+    """Every sampled value of each non-system field in one collection entry."""
+    by_field: dict[str, list[str]] = {}
+    for svc_key in _VALUE_COUNT_KEYS:
+        svc = entry.get(svc_key)
+        if isinstance(svc, dict):
+            for field, items in svc.items():
+                if isinstance(items, list):
+                    by_field.setdefault(field, []).extend(
+                        str(item["value"]) for item in items if isinstance(item, dict) and "value" in item
+                    )
+    for sk in _SAMPLE_KEYS:
+        for doc in entry.get(sk) or []:
+            if isinstance(doc, dict):
+                for field, value in doc.items():
+                    if field not in _SYSTEM_FIELD_NAMES and isinstance(value, (str, int, float)):
+                        by_field.setdefault(field, []).append(str(value))
+    return by_field
+
+
+def _screened_fields(collections: list[Any], screen: FieldValueScreen) -> dict[int, set[str]]:
+    """The fields ``screen`` withholds, keyed by the entry's position in ``collections``."""
+    picked: dict[int, set[str]] = {}
+    for i, entry in enumerate(collections):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "")
+        fields = {f for f, values in _sampled_values_by_field(entry).items() if screen(name, f, values)}
+        if fields:
+            picked[i] = fields
+    return picked
+
+
+def _screened_value_tokens(collections: list[Any], picked: dict[int, set[str]]) -> dict[str, str]:
+    """Value→token map over the screened fields' counted values only, stable across runs."""
+    values: set[str] = set()
+    for i, fields in picked.items():
+        for svc_key in _VALUE_COUNT_KEYS:
+            svc = collections[i].get(svc_key)
+            if isinstance(svc, dict):
+                for field in fields:
+                    items = svc.get(field)
+                    if isinstance(items, list):
+                        values.update(
+                            str(item["value"]) for item in items if isinstance(item, dict) and "value" in item
+                        )
+    return {v: f"{REDACTED_VALUE_TOKEN}:{i}" for i, v in enumerate(sorted(values))}
+
+
+def _mask_screened_fields(entry: dict[str, Any], fields: set[str], token_map: dict[str, str]) -> None:
+    for svc_key in _VALUE_COUNT_KEYS:
+        svc = entry.get(svc_key)
+        if isinstance(svc, dict):
+            screened = _mask_value_counts({f: v for f, v in svc.items() if f in fields}, token_map)
+            entry[svc_key] = {f: screened.get(f, v) for f, v in svc.items()}
+    for sk in _SAMPLE_KEYS:
+        docs = entry.get(sk)
+        if isinstance(docs, list):
+            entry[sk] = [
+                {k: (REDACTED_VALUE_TOKEN if k in fields else v) for k, v in doc.items()}
+                if isinstance(doc, dict)
+                else doc
+                for doc in docs
+            ]
 
 
 def _mask_value_counts(value_counts: dict[str, Any], token_map: dict[str, str]) -> dict[str, Any]:
@@ -342,22 +430,33 @@ def redact_snapshot_for_egress(
     if not isinstance(collections, list):
         return redacted
 
-    token_map = _collect_sensitive_values(collections) if options.mask_field_values else {}
+    screened: dict[int, set[str]] = {}
+    if options.mask_field_values:
+        token_map = _collect_sensitive_values(collections)
+    elif options.screen_field_values is not None:
+        screened = _screened_fields(collections, options.screen_field_values)
+        token_map = _screened_value_tokens(collections, screened)
+    else:
+        token_map = {}
     name_map: dict[str, str] = {}
     if options.mask_field_names:
         name_map = field_name_map if field_name_map is not None else build_field_name_map(collections)
 
-    for entry in collections:
+    for i, entry in enumerate(collections):
         if not isinstance(entry, dict):
             continue
         if options.strip_samples:
             for key in _SAMPLE_KEYS:
                 entry.pop(key, None)
         if options.mask_field_values:
-            for svc_key in ("sample_field_value_counts", "sample_field_value_overflow"):
+            for svc_key in _VALUE_COUNT_KEYS:
                 svc = entry.get(svc_key)
                 if isinstance(svc, dict):
                     entry[svc_key] = _mask_value_counts(svc, token_map)
+        elif i in screened:
+            _mask_screened_fields(entry, screened[i], token_map)
+        if token_map:
+            # A masked value is masked everywhere it appears, in any collection.
             observed = entry.get("observed_fields")
             if isinstance(observed, dict):
                 _mask_observed_fields(observed, token_map)
