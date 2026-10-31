@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.19.0 — 2026-10-30
+
+A minor version: LLM-egress redaction gains a per-field mode. With default options the
+prompt and the analysis output are unchanged.
+
+### Added
+- **`RedactionOptions.screen_field_values` masks only the fields a caller picks.** The
+  caller passes a function `(collection, field, sampled values) -> bool`. It is asked once
+  per field that has sampled values; a field it picks has its values masked exactly as
+  `mask_field_values` masks every field (the same `<redacted>:N` tokens, also in
+  `observed_fields.by_type` keys and edge endpoints), and its values in sample documents
+  replaced by `<redacted>`. A nested object or a list is offered under its top-level
+  field, with every string and number inside it, and picking it withholds the whole
+  value. Every other value still reaches the model, so a caller can
+  withhold personal data without hiding the type values the model needs to name entities.
+  Python only: a function cannot come from a request, so `from_dict` never sets it.
+  `mask_field_values` still masks everything when both are set. Written for
+  arango-ontoextract, which passes its personal-data screen.
+
+### Fixed
+- **Redaction now covers label co-occurrence.** A label-array collection's
+  `label_cooccurrence` block reached the model unmasked under every mode. `mask_field_values`
+  and `screen_field_values` now mask its labels with the same tokens as everywhere else, and
+  `mask_field_names` masks its field name.
+
 ## 0.18.0 — 2026-10-27
 
 A minor version: CSI gains version `"1.1"` (`path` for a value inside a nested object)
