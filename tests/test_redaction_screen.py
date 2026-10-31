@@ -85,6 +85,73 @@ def test_mask_field_values_still_masks_everything():
     assert all(k["value"].startswith("<redacted>") for k in kinds)
 
 
+NESTED = {
+    "collections": [
+        {
+            "name": "people",
+            "type": "document",
+            "sample_documents": [
+                {
+                    "_key": "1",
+                    "type": "Person",
+                    "contact": {"email": "ann@home.example", "phones": ["+1 555 0100"]},
+                    "emails": ["ann@work.example"],
+                }
+            ],
+        }
+    ],
+}
+
+
+def test_a_nested_object_or_list_is_screened_under_its_top_level_field():
+    seen: dict[str, list[str]] = {}
+
+    def personal(collection: str, field: str, values: list[str]) -> bool:
+        seen[field] = sorted(values)
+        return any("@" in v or v.startswith("+") for v in values)
+
+    out = redact_snapshot_for_egress(NESTED, RedactionOptions(screen_field_values=personal))
+    assert seen == {
+        "type": ["Person"],
+        "contact": ["+1 555 0100", "ann@home.example"],
+        "emails": ["ann@work.example"],
+    }
+    assert out["collections"][0]["sample_documents"][0] == {
+        "_key": "1",
+        "type": "Person",
+        "contact": "<redacted>",
+        "emails": "<redacted>",
+    }
+
+
+LABELLED = {
+    "collections": [
+        {
+            "name": "nodes",
+            "type": "document",
+            "sample_field_value_counts": {"labels": [{"value": "Person", "count": 3}]},
+            "label_cooccurrence": {"labels": {"Person": {"Employee": 2, "VIP": 1}}},
+        }
+    ],
+}
+
+
+def test_label_cooccurrence_is_masked_with_the_labels_it_holds():
+    out = redact_snapshot_for_egress(LABELLED, RedactionOptions(mask_field_values=True))
+    assert out["collections"][0]["label_cooccurrence"] == {
+        "labels": {"<redacted>:1": {"<redacted>:0": 2, "<redacted>:2": 1}}
+    }
+
+    def labels_only(collection: str, field: str, values: list[str]) -> bool:
+        return field == "labels"
+
+    out = redact_snapshot_for_egress(LABELLED, RedactionOptions(screen_field_values=labels_only))
+    assert not {"Person", "Employee", "VIP"} & set(json.dumps(out).replace('"', " ").split())
+
+    out = redact_snapshot_for_egress(LABELLED, RedactionOptions(mask_field_names=True))
+    assert list(out["collections"][0]["label_cooccurrence"]) == ["redacted_field_0"]
+
+
 def test_composes_with_field_name_masking():
     opts = RedactionOptions(screen_field_values=_owner_only, mask_field_names=True)
     out = redact_snapshot_for_egress(SNAPSHOT, opts)

@@ -13,7 +13,7 @@ inference, reconciliation, and statistics is always the unredacted original, so
 output quality and grounding are unaffected by what was withheld from the
 vendor.
 
-Three independent, composable modes are supported:
+Four independent, composable modes are supported:
 
 * ``strip_samples`` — drop ``sample_documents`` / ``sample_edges`` entirely.
 * ``mask_field_values`` — replace concrete *data values* (type-discriminator
@@ -21,7 +21,7 @@ Three independent, composable modes are supported:
   counts, and structure. A single snapshot-wide value→token map is used so the
   same value masks to the same token everywhere it appears:
   ``sample_field_value_counts`` / ``sample_field_value_overflow`` values,
-  ``observed_fields.by_type`` keys, and
+  ``observed_fields.by_type`` keys, ``label_cooccurrence`` labels, and
   ``edge_endpoints.entity_types_by_relation`` (relation keys + resolved
   endpoint entity-type lists). Type values resolved purely from collection names
   (Property-Graph endpoints) are left intact because they are not field data.
@@ -31,7 +31,8 @@ Three independent, composable modes are supported:
   every field-name occurrence (``candidate_type_fields``,
   ``sample_field_value_counts`` / ``sample_field_value_overflow`` /
   ``sample_field_distinct_counts`` keys, ``observed_fields.fields`` /
-  ``by_type`` value lists, ``indexes[*].fields``, and sample-document keys),
+  ``by_type`` value lists, ``indexes[*].fields``, ``label_cooccurrence`` keys,
+  and sample-document keys),
   excluding ArangoDB system fields (``_key`` / ``_from`` / ``_to`` / …). The
   caller (:class:`AgenticSchemaAnalyzer`) applies the map to the prompt snapshot
   and then calls :func:`unmask_field_names` on the model's response so the
@@ -44,7 +45,9 @@ Three independent, composable modes are supported:
   once per field that has sampled values in a collection, and a field it picks
   has its values masked the way ``mask_field_values`` masks every field (same
   ``<redacted>:N`` tokens, also in ``by_type`` keys and edge endpoints), and its
-  values in sample documents replaced by ``<redacted>``. Every other value goes
+  values in sample documents replaced by ``<redacted>``. A nested object or a
+  list is offered under its top-level field, with every string and number inside
+  it, and picking it withholds the whole value. Every other value goes
   out unchanged, so a caller can withhold personal data and still let the model
   see type values like ``"Person"``. Library-only: a function cannot come from a
   request, so ``from_dict`` never sets it. Ignored when ``mask_field_values``
@@ -125,11 +128,56 @@ def _collect_sensitive_values(collections: list[Any]) -> dict[str, str]:
         observed = entry.get("observed_fields")
         if isinstance(observed, dict) and isinstance(observed.get("by_type"), dict):
             values.update(str(k) for k in observed["by_type"])
+        values.update(_cooccurring_labels(entry))
     return {v: f"{REDACTED_VALUE_TOKEN}:{i}" for i, v in enumerate(sorted(values))}
 
 
+def _cooccurring_labels(entry: dict[str, Any], fields: set[str] | None = None) -> set[str]:
+    """Every label in ``label_cooccurrence``, only under ``fields`` when given."""
+    labels: set[str] = set()
+    lc = entry.get("label_cooccurrence")
+    if isinstance(lc, dict):
+        for field, by_primary in lc.items():
+            if (fields is None or field in fields) and isinstance(by_primary, dict):
+                for primary, others in by_primary.items():
+                    labels.add(str(primary))
+                    if isinstance(others, dict):
+                        labels.update(str(o) for o in others)
+    return labels
+
+
+def _mask_label_cooccurrence(entry: dict[str, Any], token_map: dict[str, str]) -> None:
+    lc = entry.get("label_cooccurrence")
+    if not isinstance(lc, dict):
+        return
+    masked: dict[str, Any] = {}
+    for field, by_primary in lc.items():
+        if not isinstance(by_primary, dict):
+            masked[field] = by_primary
+            continue
+        masked[field] = {
+            token_map.get(str(p), str(p)): (
+                {token_map.get(str(o), str(o)): n for o, n in others.items()} if isinstance(others, dict) else others
+            )
+            for p, others in by_primary.items()
+        }
+    entry["label_cooccurrence"] = masked
+
+
+def _scalar_leaves(value: Any) -> list[str]:
+    """Every string and number in ``value``, however deep in objects and lists."""
+    if isinstance(value, dict):
+        return [leaf for v in value.values() for leaf in _scalar_leaves(v)]
+    if isinstance(value, list):
+        return [leaf for v in value for leaf in _scalar_leaves(v)]
+    return [str(value)] if isinstance(value, (str, int, float)) else []
+
+
 def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
-    """Every sampled value of each non-system field in one collection entry."""
+    """Every sampled value of each non-system field in one collection entry.
+
+    A nested object or list counts as one top-level field holding every value inside it.
+    """
     by_field: dict[str, list[str]] = {}
     for svc_key in _VALUE_COUNT_KEYS:
         svc = entry.get(svc_key)
@@ -143,8 +191,9 @@ def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
         for doc in entry.get(sk) or []:
             if isinstance(doc, dict):
                 for field, value in doc.items():
-                    if field not in _SYSTEM_FIELD_NAMES and isinstance(value, (str, int, float)):
-                        by_field.setdefault(field, []).append(str(value))
+                    leaves = [] if field in _SYSTEM_FIELD_NAMES else _scalar_leaves(value)
+                    if leaves:
+                        by_field.setdefault(field, []).extend(leaves)
     return by_field
 
 
@@ -174,6 +223,7 @@ def _screened_value_tokens(collections: list[Any], picked: dict[int, set[str]]) 
                         values.update(
                             str(item["value"]) for item in items if isinstance(item, dict) and "value" in item
                         )
+        values.update(_cooccurring_labels(collections[i], fields))
     return {v: f"{REDACTED_VALUE_TOKEN}:{i}" for i, v in enumerate(sorted(values))}
 
 
@@ -370,6 +420,10 @@ def _mask_field_names_in_entry(entry: dict[str, Any], name_map: dict[str, str]) 
             }
         _mask_nested_names(observed, name_map)
 
+    lc = entry.get("label_cooccurrence")
+    if isinstance(lc, dict):
+        entry["label_cooccurrence"] = {_mask_name(k, name_map): v for k, v in lc.items()}
+
     indexes = entry.get("indexes")
     if isinstance(indexes, list):
         for idx in indexes:
@@ -463,6 +517,7 @@ def redact_snapshot_for_egress(
             endpoints = entry.get("edge_endpoints")
             if isinstance(endpoints, dict):
                 _mask_edge_endpoints(endpoints, token_map)
+            _mask_label_cooccurrence(entry, token_map)
         if options.mask_field_names and name_map:
             _mask_field_names_in_entry(entry, name_map)
     return redacted
