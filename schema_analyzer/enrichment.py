@@ -22,6 +22,7 @@ from typing import Any
 from .arango_products import detect_arango_products
 from .graph_membership import compute_graph_membership
 from .graphrag import detect_graphrag
+from .list_values import apply_list_values
 from .multitenancy import classify_multitenancy
 from .nested_fields import apply_field_locations
 from .rdf_topology import detect_rdf_topology
@@ -117,6 +118,13 @@ def _apply_nested_fields(data: dict[str, Any], snapshot: dict[str, Any]) -> None
     report = apply_field_locations(data, snapshot)
     if report is not None:
         _metadata(data)["nestedFields"] = report
+
+
+def _apply_list_values(data: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    """Mark ``multiValued`` on each property mapping whose attribute the sample holds
+    as a list (CDF #220). Runs after :func:`_apply_nested_fields`; writes nothing for a
+    database without lists."""
+    apply_list_values(data, snapshot)
 
 
 def _apply_sharding_profile(

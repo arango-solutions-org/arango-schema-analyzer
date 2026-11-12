@@ -114,6 +114,13 @@ name per level (`"path": ["address", "city"]`). Read it instead of `attribute`:
 `RETURN s.address.city`, never `` s.`address.city` `` (see "Values inside nested
 objects" below). The OWL export writes the same location as `phys:attributePath`.
 
+A datatype property whose attribute holds a list carries `"multiValued": true` (CSI
+1.2 property mappings carry the same key; the OWL export writes
+`phys:multiValued "true"`). Each element is one value: bind `?o` once per element
+(`FOR v IN s.questionsServed`) and match a bound object by membership
+(`@v IN s.questionsServed`), not by `==`, which compares the whole list. Every other
+datatype property is one value, so `==` and an index on it still apply.
+
 `domain`/`range`/IRIs are absent only when the source analysis lacks an endpoint;
 fall back to `physicalMapping` or report an unresolved pattern. The same datatype
 predicate IRI may appear under multiple `domain`s (a property reused across

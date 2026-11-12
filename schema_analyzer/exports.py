@@ -47,6 +47,13 @@ def _property_path(mapping: Any, prop: str) -> list[str] | None:
     return None
 
 
+def _property_multi_valued(mapping: Any, prop: str) -> bool:
+    """Whether an entity mapping marks *prop* ``multiValued`` (its attribute holds a list)."""
+    props = mapping.get("properties") if isinstance(mapping, dict) else None
+    spec = props.get(prop) if isinstance(props, dict) else None
+    return isinstance(spec, dict) and spec.get("multiValued") is True
+
+
 def export_mapping(analysis: AnalysisResult | dict[str, Any], target: str = "cypher") -> dict[str, Any]:
     """Export the analysis into a stable JSON contract consumable by transpilers.
 
@@ -142,6 +149,9 @@ def _export_sparql(
             path = _property_path(pm_entities.get(name), attr)
             if path is not None:
                 dp["path"] = path
+            # The attribute holds a list, one value per element (CDF #220).
+            if _property_multi_valued(pm_entities.get(name), attr):
+                dp["multiValued"] = True
             datatype_properties.append(dp)
 
     object_properties: list[dict[str, Any]] = []

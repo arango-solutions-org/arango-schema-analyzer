@@ -158,6 +158,9 @@
           "kind",
           "labels",
           "type"
+        ],
+        "list_fields": [
+          "labels"
         ]
       }
     },

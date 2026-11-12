@@ -27,6 +27,7 @@ from .defaults import (
     SNAPSHOT_FORMAT_VERSION,
 )
 from .errors import SchemaAnalyzerError
+from .list_values import list_fields_of
 from .nested_fields import nested_depth, summarize_documents
 from .type_detection import (
     EDGE_FROM_TYPE_FIELDS,
@@ -52,6 +53,39 @@ _PROPERTY_SAMPLE_LIMIT = 10
 #: r2g builds the ``_key`` namespace and the CSI ``typeValue`` on it — so an array groups by
 #: its first element. Scalar fields are unchanged.
 _PRIMARY = "(IS_ARRAY({x}) ? FIRST({x}) : {x})"
+
+#: One sampled document's attribute names, and which of them hold a list: ``scalars``
+#: is false when the list holds an object or a list (``list_values``). Read by
+#: :func:`_read_attribute_rows`.
+_ATTRIBUTES_AND_LISTS = (
+    "LET a = ATTRIBUTES(d) RETURN {fields: a, lists: (FOR k IN a FILTER IS_ARRAY(d[k]) "
+    "RETURN {name: k, scalars: LENGTH(FOR x IN d[k] FILTER IS_OBJECT(x) OR IS_ARRAY(x) LIMIT 1 RETURN 1) == 0})}"
+)
+
+
+def _read_attribute_rows(rows: Iterable[Any], exclude: set[str]) -> tuple[set[str], set[str], set[str]]:
+    """``(names, lists of scalars, lists holding structures)`` from :data:`_ATTRIBUTES_AND_LISTS` rows.
+
+    A row that is a bare list of names (the shape before list detection) still reads.
+    """
+    keys: set[str] = set()
+    scalars: set[str] = set()
+    structures: set[str] = set()
+    for row in rows:
+        if isinstance(row, list):
+            keys.update(k for k in row if isinstance(k, str) and k not in exclude)
+            continue
+        if not isinstance(row, dict):
+            continue
+        names = row.get("fields")
+        if isinstance(names, list):
+            keys.update(k for k in names if isinstance(k, str) and k not in exclude)
+        for item in row.get("lists") or []:
+            name = item.get("name") if isinstance(item, dict) else None
+            if not isinstance(name, str) or name in exclude:
+                continue
+            (scalars if item.get("scalars") else structures).add(name)
+    return keys, scalars, structures
 
 
 def _detect_label_cooccurrence(db: StandardDatabase, collection_name: str, field: str) -> dict[str, dict[str, int]]:
@@ -256,6 +290,9 @@ def _detect_observed_fields(
     walked into nested objects, adding ``nested_paths`` (or ``nested_paths_by_type``),
     ``nested_conflicts`` (dotted names held in two shapes, collection-wide) and
     ``nested_arrays_skipped``. Depth 0 keeps the ``ATTRIBUTES(d)`` pass and output.
+
+    Either way, ``list_fields`` names the top-level attributes the sample holds as a
+    list of scalars (:mod:`.list_values`), written only when there is one.
     """
     exclude = set(_SYSTEM_FIELDS)
     if type_field:
@@ -267,6 +304,11 @@ def _detect_observed_fields(
             db, collection_name, exclude, type_field=type_field, type_values=type_values, depth=nested_field_depth
         )
 
+    # Lists are judged collection-wide, as nested conflicts are: one attribute is one
+    # property mapping per entity, and reading a scalar as a one-element list is harmless.
+    scalars: set[str] = set()
+    structures: set[str] = set()
+    out: dict[str, Any]
     if type_field and type_values:
         result: dict[str, list[str]] = {}
         for tv in type_values:
@@ -275,7 +317,8 @@ def _detect_observed_fields(
                     db,
                     "FOR d IN @@c FILTER "
                     + _PRIMARY.format(x="d[@field]")
-                    + " == @val LIMIT @lim RETURN ATTRIBUTES(d)",
+                    + " == @val LIMIT @lim "
+                    + _ATTRIBUTES_AND_LISTS,
                     bind_vars={
                         "@c": collection_name,
                         "field": type_field,
@@ -283,28 +326,28 @@ def _detect_observed_fields(
                         "lim": _PROPERTY_SAMPLE_LIMIT,
                     },
                 )
-                keys: set[str] = set()
-                for attr_list in cursor:
-                    if isinstance(attr_list, list):
-                        keys.update(k for k in attr_list if k not in exclude)
+                keys, found_scalars, found_structures = _read_attribute_rows(cursor, exclude)
                 result[str(tv)] = sorted(keys)
+                scalars |= found_scalars
+                structures |= found_structures
             except Exception:
                 continue
-        return {"by_type": result}
+        out = {"by_type": result}
     else:
         try:
             cursor = aql_execute(
                 db,
-                "FOR d IN @@c LIMIT @lim RETURN ATTRIBUTES(d)",
+                "FOR d IN @@c LIMIT @lim " + _ATTRIBUTES_AND_LISTS,
                 bind_vars={"@c": collection_name, "lim": _PROPERTY_SAMPLE_LIMIT},
             )
-            keys_all: set[str] = set()
-            for attr_list in cursor:
-                if isinstance(attr_list, list):
-                    keys_all.update(k for k in attr_list if k not in exclude)
-            return {"fields": sorted(keys_all)}
+            keys_all, scalars, structures = _read_attribute_rows(cursor, exclude)
+            out = {"fields": sorted(keys_all)}
         except Exception:
             return {}
+    lists = sorted(scalars - structures)
+    if lists:
+        out["list_fields"] = lists
+    return out
 
 
 def _detect_observed_fields_nested(
@@ -363,6 +406,9 @@ def _detect_observed_fields_nested(
     # Conflicts and skipped lists are judged over the whole collection's sample: one
     # collection holding both shapes under a name is what a person has to settle.
     whole = summarize_documents(all_docs, depth, exclude=exclude)
+    lists = list_fields_of(all_docs, exclude=exclude)
+    if lists:
+        out["list_fields"] = lists
     if whole["conflicts"]:
         out["nested_conflicts"] = whole["conflicts"]
     if whole["arrays_skipped"]:

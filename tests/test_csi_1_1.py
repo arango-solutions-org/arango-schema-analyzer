@@ -57,7 +57,7 @@ def test_version_1_1_without_path_is_valid():
     assert _errors(_doc("1.1", {"name": {"field": "name"}})) == []
 
 
-@pytest.mark.parametrize("bad", ["2", "1.2", "", 1, 1.1, None])
+@pytest.mark.parametrize("bad", ["2", "1.3", "", 1, 1.1, 1.2, None])
 def test_other_versions_are_refused(bad):
     assert _errors(_doc(bad, {"name": {"field": "name"}}))
 
@@ -106,9 +106,13 @@ def test_descriptive_and_x_keys_are_allowed():
         "sentinelValues": ["N/A"],
         "numericLike": False,
         "sampleValues": ["Ann", 3],
+        "multiValued": True,
         "x-vendor": {"anything": True},
     }
     assert set(entry) - {"field", "x-vendor"} == set(PROPERTY_DESCRIPTIVE_KEYS)
+    # multiValued needs csiVersion 1.2 (test_csi_1_2.py); every other key is version 1.
+    assert _errors(_doc("1.2", {"name": entry})) == []
+    del entry["multiValued"]
     assert _errors(_doc("1", {"name": entry})) == []
 
 

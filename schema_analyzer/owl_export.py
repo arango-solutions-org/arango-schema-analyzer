@@ -119,11 +119,11 @@ _XSD_RANGE: dict[str, str] = {
 
 def _datatype_properties(
     data: dict[str, Any], *, reserved: set[str]
-) -> list[tuple[str, str, list[str], str | None, str | None, list[str] | None]]:
+) -> list[tuple[str, str, list[str], str | None, str | None, list[str] | None, bool]]:
     """Each entity property as one OWL datatype property.
 
-    Returns ``(local_name, label, domain_entities, xsd_range, field, path)`` sorted by
-    local name. A property name shared by several entities (``content`` on a
+    Returns ``(local_name, label, domain_entities, xsd_range, field, path, multi_valued)``
+    sorted by local name. A property name shared by several entities (``content`` on a
     Chunk and a Document) is one property whose domain lists them all — the
     caller writes that as an ``owl:unionOf`` domain, since repeated
     ``rdfs:domain`` triples mean the *intersection* of the classes.
@@ -137,6 +137,10 @@ def _datatype_properties(
     * ``path`` — for a value inside a nested object (issue #33), one name per
       level (``properties.<name>.path``); ``field`` is then ``None``, because no
       single stored attribute holds the value.
+    * ``multi_valued`` — some entity's mapping marks the attribute as holding a list
+      (``properties.<name>.multiValued``, :mod:`.list_values`): the export writes
+      ``phys:multiValued "true"`` so a reader takes one value per element. One entity
+      is enough, since reading a scalar as a one-element list loses nothing.
 
     A local name already used by a class or an object property (*reserved*) is
     skipped rather than punned, and so is a sanitized name two different
@@ -159,7 +163,8 @@ def _datatype_properties(
                 continue
             raw = prop["name"]
             entry = by_local.setdefault(
-                _sanitize_iri_local(raw), {"raws": set(), "domains": [], "types": set(), "fields": set()}
+                _sanitize_iri_local(raw),
+                {"raws": set(), "domains": [], "types": set(), "fields": set(), "multi": False},
             )
             entry["raws"].add(raw)
             if e["name"] not in entry["domains"]:
@@ -167,6 +172,8 @@ def _datatype_properties(
             ptype = prop.get("type")
             entry["types"].add(_XSD_RANGE.get(ptype.strip().lower()) if isinstance(ptype, str) else None)
             spec = prop_map.get(raw)
+            if isinstance(spec, dict) and spec.get("multiValued") is True:
+                entry["multi"] = True
             path = spec.get("path") if isinstance(spec, dict) else None
             if isinstance(path, list) and path and all(isinstance(seg, str) for seg in path):
                 # A value inside a nested object (issue #33) has no single stored
@@ -176,7 +183,7 @@ def _datatype_properties(
             field = spec.get("field") if isinstance(spec, dict) else None
             entry["fields"].add(field if isinstance(field, str) and field else raw)
 
-    out: list[tuple[str, str, list[str], str | None, str | None, list[str] | None]] = []
+    out: list[tuple[str, str, list[str], str | None, str | None, list[str] | None, bool]] = []
     for local, entry in sorted(by_local.items()):
         if local in reserved or len(entry["raws"]) != 1:
             continue
@@ -184,9 +191,10 @@ def _datatype_properties(
         xsd = next(iter(entry["types"])) if len(entry["types"]) == 1 else None
         location = next(iter(entry["fields"])) if len(entry["fields"]) == 1 else None
         if isinstance(location, tuple):
-            out.append((local, raw, list(entry["domains"]), xsd, None, list(location)))
+            out.append((local, raw, list(entry["domains"]), xsd, None, list(location), entry["multi"]))
         else:
-            out.append((local, raw, list(entry["domains"]), xsd, location if location != local else None, None))
+            field = location if location != local else None
+            out.append((local, raw, list(entry["domains"]), xsd, field, None, entry["multi"]))
     return out
 
 
@@ -250,6 +258,7 @@ def export_conceptual_model_as_owl_turtle(
         "edgeCollectionName",
         "attributeName",
         "attributePath",
+        "multiValued",
     ]:
         lines.append(f"phys:{ap} a owl:AnnotationProperty .")
     lines.append("")
@@ -350,7 +359,7 @@ def export_conceptual_model_as_owl_turtle(
 
     # Datatype properties — the entities' fields (docs/OWL-FOR-CONCEPTUAL-SCHEMA.md
     # "Data Properties"). Without these the ontology carried no field at all.
-    for local, label, domains, xsd, field, path in _datatype_properties(data, reserved=_reserved_locals(data)):
+    for local, label, domains, xsd, field, path, multi in _datatype_properties(data, reserved=_reserved_locals(data)):
         iri = f":{local}"
         lines.append(f"{iri} a owl:DatatypeProperty ;")
         lines.append(f'  rdfs:label "{_ttl_escape(label)}" ;')
@@ -367,6 +376,9 @@ def export_conceptual_model_as_owl_turtle(
         if path:
             # A JSON array, one name per level, as arango-sparql-py#84 reads it.
             lines.append(f'{iri} phys:attributePath "{_ttl_escape(json.dumps(path))}" .')
+        if multi:
+            # The attribute holds a list, one value per element (CDF #220).
+            lines.append(f'{iri} phys:multiValued "true" .')
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -467,7 +479,7 @@ def export_conceptual_model_as_jsonld(
                 node["phys:edgeCollectionName"] = str(mapping["edgeCollectionName"])
         graph.append(node)
 
-    for local, label, domains, xsd, field, path in _datatype_properties(data, reserved=_reserved_locals(data)):
+    for local, label, domains, xsd, field, path, multi in _datatype_properties(data, reserved=_reserved_locals(data)):
         dp: dict[str, Any] = {"@id": local, "@type": "owl:DatatypeProperty", "rdfs:label": label}
         domain_ids = [{"@id": _sanitize_iri_local(d)} for d in domains]
         dp["rdfs:domain"] = (
@@ -479,6 +491,8 @@ def export_conceptual_model_as_jsonld(
             dp["phys:attributeName"] = field
         if path:
             dp["phys:attributePath"] = json.dumps(path)
+        if multi:
+            dp["phys:multiValued"] = "true"
         graph.append(dp)
 
     return {

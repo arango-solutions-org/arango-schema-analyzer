@@ -31,7 +31,7 @@ Four independent, composable modes are supported:
   every field-name occurrence (``candidate_type_fields``,
   ``sample_field_value_counts`` / ``sample_field_value_overflow`` /
   ``sample_field_distinct_counts`` keys, ``observed_fields.fields`` /
-  ``by_type`` value lists, ``indexes[*].fields``, ``label_cooccurrence`` keys,
+  ``list_fields`` / ``by_type`` value lists, ``indexes[*].fields``, ``label_cooccurrence`` keys,
   and sample-document keys),
   excluding ArangoDB system fields (``_key`` / ``_from`` / ``_to`` / …). The
   caller (:class:`AgenticSchemaAnalyzer`) applies the map to the prompt snapshot
@@ -317,8 +317,9 @@ def build_field_name_map(collections: list[Any]) -> dict[str, str]:
                     _add(k)
         observed = entry.get("observed_fields")
         if isinstance(observed, dict):
-            for f in observed.get("fields") or []:
-                _add(f)
+            for key in ("fields", "list_fields"):
+                for f in observed.get(key) or []:
+                    _add(f)
             by_type = observed.get("by_type")
             if isinstance(by_type, dict):
                 for field_list in by_type.values():
@@ -410,9 +411,10 @@ def _mask_field_names_in_entry(entry: dict[str, Any], name_map: dict[str, str]) 
 
     observed = entry.get("observed_fields")
     if isinstance(observed, dict):
-        fields = observed.get("fields")
-        if isinstance(fields, list):
-            observed["fields"] = [_mask_name(f, name_map) for f in fields]
+        for key in ("fields", "list_fields"):
+            names = observed.get(key)
+            if isinstance(names, list):
+                observed[key] = [_mask_name(f, name_map) for f in names]
         by_type = observed.get("by_type")
         if isinstance(by_type, dict):
             observed["by_type"] = {

@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from schema_analyzer.list_values import classify_list
 from schema_analyzer.snapshot import snapshot_physical_schema
 
 
@@ -77,14 +78,21 @@ class FakeDB:
                         ]
                     )
 
-                if "RETURN ATTRIBUTES" in query:
+                if "LET a = ATTRIBUTES(d)" in query:
+                    # One row per sampled document: its attribute names, and which
+                    # of them hold a list (of scalars only, or not).
                     field = bind_vars.get("field")
                     val = bind_vars.get("val")
                     result = []
                     for s in samples:
                         if field and val is not None and s.get(field) != val:
                             continue
-                        result.append(list(s.keys()))
+                        lists = [
+                            {"name": k, "scalars": classify_list(v) == "scalars"}
+                            for k, v in s.items()
+                            if isinstance(v, list)
+                        ]
+                        result.append({"fields": list(s.keys()), "lists": lists})
                     return iter(result[: bind_vars.get("lim", 10)])
 
                 if "PARSE_IDENTIFIER" in query:
