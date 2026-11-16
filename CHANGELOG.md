@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 — 2026-11-16
 
 A minor version: an attribute that holds a list is marked, and CSI gains version
 `"1.2"` to carry the marker. A database without list-valued attributes analyzes exactly
