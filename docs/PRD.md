@@ -612,6 +612,19 @@ round-trips `path`. The reader side is arango-sparql-py#84; r2g vendors the sche
 **Implementation**: `csi/v1/csi.schema.json` (`$defs/PropertyMapping`, the `allOf`
 version rule), `csi/__init__.py` (`_settle_property_mappings`), `csi/naming.py`.
 
+**CSI 1.2: attributes that hold a list (contextual-data-fabric #220) — _shipped_.** An
+entity property mapping may carry `multiValued: true`: its attribute holds a list, and
+each element is one value of the property (one triple per element). `type` keeps naming
+the type of one element. A document that uses `multiValued` declares `csiVersion`
+`"1.2"`, and only then (1.2 includes 1.1's `path`): a reader of 1 or 1.1 would ignore
+the key and bind the whole list as one value, so the schema refuses the key in a `"1"`
+or `"1.1"` document. `to_csi` writes the lowest version a document needs. The marker
+comes from the sample (§6.2, list-valued attributes); a consumer reads it per
+attribute, so equality on every other attribute stays index-friendly. The reader side
+is arango-sparql-py (`phys:multiValued` / `multiValued`). **Implementation**:
+`csi/v1/csi.schema.json` (`multiValued`, the second `allOf` rule),
+`csi/__init__.py` (`_csi_version_for`).
+
 #### **6.1. Additional Mapping Styles**
 - `TRIPLE` — _Shipped in 0.7.0_ as an additive annotation
   (`physicalMapping[*].triple = {"style":"TRIPLE"}` + `tripleCandidate`) driven
@@ -819,6 +832,25 @@ version rule), `csi/__init__.py` (`_settle_property_mappings`), `csi/naming.py`.
   **Implementation**: `nested_fields.py`, `snapshot.py`
   (`_detect_observed_fields_nested`), `baseline.py` (`_extract_properties`,
   `_build_property_mapping`), `enrichment.py` (`_apply_nested_fields`).
+- **List-valued attributes (contextual-data-fabric #220).** _Shipped._ The property
+  sample records, per collection, the top-level attributes some sampled document holds
+  as an array of scalars, an empty array included (`observed_fields.list_fields`,
+  written only when there is one). After the baseline or the LLM has written the
+  mapping, each property mapping that reads such an attribute (by `field`, or by its
+  name) gets `multiValued: true`, and so does the conceptual property of that name;
+  `type` still names one element. Not marked: an attribute some sampled document holds
+  as an array containing an object or an array (no comparable elements; nested lists
+  are §6.2's `arraysSkipped`), an attribute a geo or vector index covers (one point,
+  one embedding), and a value inside a nested object (`path`). A scalar in one document
+  and a list in another is marked: a scalar reads as a one-element list. It is a
+  sample (10 documents per collection, or per type value): an attribute that holds a
+  list only outside the sample is not marked, and a reader then binds its arrays whole.
+  The OWL and JSON-LD exports write `phys:multiValued "true"` on the datatype property
+  (one entity holding a list is enough), and the SPARQL export sets
+  `datatypeProperties[].multiValued`. `list_fields` is masked by
+  `redaction.maskFieldNames`. **Implementation**: `list_values.py`, `snapshot.py`
+  (`_ATTRIBUTES_AND_LISTS`), `enrichment.py` (`_apply_list_values`), `owl_export.py`,
+  `exports.py`.
 
 #### **6.3. Richer OWL Support**
 - Class hierarchies (`rdfs:subClassOf`):

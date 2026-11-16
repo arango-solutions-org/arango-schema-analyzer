@@ -40,7 +40,12 @@ CSI_VERSION = "1"
 #: inside a nested object). Readers of version 1 refuse it rather than read the wrong
 #: field, so :func:`to_csi` writes it only when ``path`` is actually used.
 CSI_VERSION_NESTED = "1.1"
-CSI_VERSIONS = (CSI_VERSION, CSI_VERSION_NESTED)
+#: The version a document declares when some property mapping carries ``multiValued``
+#: (its attribute holds a list, one value per element; CDF #220). It includes 1.1. A
+#: reader that does not know the key would read the whole list as one value, so
+#: :func:`to_csi` writes it only when the key is actually used.
+CSI_VERSION_LISTS = "1.2"
+CSI_VERSIONS = (CSI_VERSION, CSI_VERSION_NESTED, CSI_VERSION_LISTS)
 
 #: Keys an entity property mapping may hold besides its location (``field`` / ``path``),
 #: plus any key starting with ``x-``. Everything else is refused by readers.
@@ -54,6 +59,7 @@ PROPERTY_DESCRIPTIVE_KEYS = (
     "sentinelValues",
     "numericLike",
     "sampleValues",
+    "multiValued",
 )
 
 
@@ -179,6 +185,25 @@ def _uses_path(physical: Any) -> bool:
     return False
 
 
+def _uses_multi_valued(physical: Any) -> bool:
+    if not isinstance(physical, dict):
+        return False
+    specs = physical.get("entities")
+    for spec in specs.values() if isinstance(specs, dict) else []:
+        props = spec.get("properties") if isinstance(spec, dict) else None
+        for entry in props.values() if isinstance(props, dict) else []:
+            if isinstance(entry, dict) and "multiValued" in entry:
+                return True
+    return False
+
+
+def _csi_version_for(physical: Any) -> str:
+    """The lowest version whose readers can read *physical*'s property mappings."""
+    if _uses_multi_valued(physical):
+        return CSI_VERSION_LISTS
+    return CSI_VERSION_NESTED if _uses_path(physical) else CSI_VERSION
+
+
 def _prefix_unknown_keys(entry: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
     """*entry* with each key CSI does not allow kept under an ``x-`` prefix.
 
@@ -199,8 +224,9 @@ def _prefix_unknown_keys(entry: dict[str, Any], allowed: set[str]) -> dict[str, 
 def _settle_property_mappings(doc: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     """Make the document's property mappings valid CSI and pick its version (issue #33).
 
-    * ``csiVersion`` is ``"1.1"`` only when some property mapping uses ``path``, so an
-      analyzer upgrade never turns a document a version-1 reader can read into one it
+    * ``csiVersion`` is ``"1.1"`` only when some property mapping uses ``path``, and
+      ``"1.2"`` only when some entity property mapping carries ``multiValued``, so an
+      analyzer upgrade never turns a document an older reader can read into one it
       refuses.
     * An entity property mapping is strict: a key that is neither a location, a
       descriptive key nor ``x-`` prefixed (an LLM-written ``description``, say) is kept
@@ -233,7 +259,7 @@ def _settle_property_mappings(doc: dict[str, Any], metadata: dict[str, Any]) -> 
                     props[name] = _prefix_unknown_keys(entry, allowed)
     if conflicts:
         doc.setdefault("provenance", {})["unresolvedFieldLocations"] = conflicts
-    doc["csiVersion"] = CSI_VERSION_NESTED if _uses_path(doc.get("arangoPhysicalMapping")) else CSI_VERSION
+    doc["csiVersion"] = _csi_version_for(doc.get("arangoPhysicalMapping"))
     return doc
 
 
@@ -307,9 +333,9 @@ def from_csi(csi: dict[str, Any]) -> dict[str, Any]:
     metadata}`` shape this library's consumers (diff, gold, quality, exports)
     accept. Provenance is folded into ``metadata`` (confidence / timestamp).
 
-    Accepts ``csiVersion`` ``"1"`` and ``"1.1"``; a property mapping's ``path`` (a value
-    inside a nested object) is carried through unchanged, so ``to_csi`` → ``from_csi``
-    round-trips it.
+    Accepts ``csiVersion`` ``"1"``, ``"1.1"`` and ``"1.2"``; a property mapping's ``path``
+    (a value inside a nested object) and ``multiValued`` (an attribute holding a list) are
+    carried through unchanged, so ``to_csi`` → ``from_csi`` round-trips them.
     """
     conceptual = csi.get("conceptualModel")
     physical = csi.get("arangoPhysicalMapping")

@@ -34,6 +34,7 @@ from .enrichment import (
     _apply_collection_name_allowlist,
     _apply_graph_membership,
     _apply_graphrag,
+    _apply_list_values,
     _apply_multitenancy,
     _apply_nested_fields,
     _apply_rdf_topology,
@@ -479,6 +480,7 @@ class AgenticSchemaAnalyzer:
                 "metadata": {"detectedPatterns": list(baseline.get("detectedPatterns", []))},
             }
             _apply_nested_fields(stats_holder, snapshot)
+            _apply_list_values(stats_holder, snapshot)
             _apply_sharding_profile(stats_holder, snapshot)
             _apply_shard_families(stats_holder)
             _apply_multitenancy(stats_holder, snapshot)
@@ -667,6 +669,7 @@ class AgenticSchemaAnalyzer:
             repair_attempts = 0
 
         _apply_nested_fields(data, prep.snapshot)
+        _apply_list_values(data, prep.snapshot)
         _apply_sharding_profile(data, prep.snapshot)
         _apply_shard_families(data)
         _apply_multitenancy(data, prep.snapshot)
@@ -849,6 +852,7 @@ class AgenticSchemaAnalyzer:
             repair_attempts = 0
 
         _apply_nested_fields(data, prep.snapshot)
+        _apply_list_values(data, prep.snapshot)
         _apply_sharding_profile(data, prep.snapshot)
         _apply_shard_families(data)
         _apply_multitenancy(data, prep.snapshot)

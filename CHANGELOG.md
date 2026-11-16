@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+A minor version: an attribute that holds a list is marked, and CSI gains version
+`"1.2"` to carry the marker. A database without list-valued attributes analyzes exactly
+as before and `to_csi` writes the same version as before.
+
+### Added
+- **List-valued attributes are marked `multiValued` (contextual-data-fabric #220).** The
+  property sample now records which top-level attributes hold an array of scalars
+  (`observed_fields.list_fields`), and each property mapping reading one, with its
+  conceptual property, gets `multiValued: true`; `type` still names one element. An
+  array of objects or of arrays, a geo- or vector-indexed field and a nested value are
+  never marked. A reader such as arango-sparql-py binds each element as its own value,
+  so `?d :questionsServed "Q2"` finds the documents whose list holds `Q2` and
+  `COUNT(?q)` counts values, while equality on every other attribute stays
+  index-friendly. The OWL and JSON-LD exports write `phys:multiValued "true"` and the
+  SPARQL export `multiValued`.
+- **CSI `"1.2"`.** An entity property mapping may carry `multiValued` (boolean); a
+  document declares `"1.2"` only when one does, and the schema refuses the key in a
+  `"1"` or `"1.1"` document, since an older reader would read the whole list as one
+  value. `from_csi` round-trips it.
+
+### Changed
+- The depth-0 property sample asks ArangoDB which attributes hold arrays in the same
+  query (`_ATTRIBUTES_AND_LISTS`), so a collection with list-valued attributes has a new
+  snapshot fingerprint and is analyzed again rather than served from an older cache
+  entry.
+
 ## 0.19.0 — 2026-10-30
 
 A minor version: LLM-egress redaction gains a per-field mode. With default options the
