@@ -382,7 +382,7 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
             return _build_response(
                 op=op,
                 req_id=req_id,
-                result={"csi": to_csi(analysis_in)},
+                result={"csi": to_csi(analysis_in, publisher_uri=output_options.get("csiPublisherUri"))},
                 tooling=_tooling_block(analysis=analysis_in, snapshot=None),
             )
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Additive on CSI version `"1"` (issue #42; CDF `unified-ontology-mapping-architecture.md`
+§8.1). Without a publisher URI, `to_csi` writes the same document as before.
+
+### Added
+- **`physicalMapping`, the generalized name of `arangoPhysicalMapping`.** The same object
+  under a second key; `arangoPhysicalMapping` stays required, so v1 readers keep working.
+  `from_csi` reads the old key, else the new one, and refuses a document whose two keys
+  differ; `validate_csi` reports it.
+- **Relational sources.** An entity mapping may carry `relation`
+  (`{kind: "table"|"view", schema, name}`) and `columns` (`[{name, sqlType, nullable}]`).
+  They travel whether or not a publisher URI is given. `style` is unchanged.
+- **Publisher-minted mapping ids.** `to_csi(..., publisher_uri=...)` (tool:
+  `outputOptions.csiPublisherUri`) records `provenance.publisher.uri` and gives every
+  entity and relationship mapping an `id`, every entity and relationship property a
+  `propertyIds` entry (beside `properties`; the property mapping stays strict) and every
+  lifted foreign-key `reference` an `id`, then writes `physicalMapping`. The URI is the
+  namespace of one published document: use a distinct one per document. Ids are built
+  from names, so exporting again or reordering gives the same ids; an id already present
+  is never replaced, so one carried through `from_csi` survives a rename. `from_csi` keeps
+  ids, relational details and the publisher (`metadata.publisherUri`), so
+  `to_csi(from_csi(doc))` writes them again. Once any id is present, `validate_csi`
+  requires the publisher, full coverage, ids under it, and no duplicates.
+
 ## 0.20.0 — 2026-11-16
 
 A minor version: an attribute that holds a list is marked, and CSI gains version
