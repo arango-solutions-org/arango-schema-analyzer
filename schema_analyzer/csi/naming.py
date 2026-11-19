@@ -345,6 +345,10 @@ def apply_owl_naming(
                     new_prop_map[k] = v
             if new_prop_map:
                 spec["properties"] = new_prop_map
+            # Mapping ids (issue #42) are keyed like ``properties``; follow the rename.
+            prop_ids = spec.get("propertyIds")
+            if isinstance(prop_ids, dict):
+                spec["propertyIds"] = {prop_renames.get(k, k): v for k, v in prop_ids.items()}
 
     # Physical-mapping entity keys follow the conceptual rename; the physical
     # collection name stays what it is.

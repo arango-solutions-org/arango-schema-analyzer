@@ -218,6 +218,11 @@
           "enum": ["turtle", "jsonld"],
           "default": "turtle",
           "description": "Serialization for the owl operation. 'turtle' returns result.turtle; 'jsonld' returns result.jsonld."
+        },
+        "csiPublisherUri": {
+          "type": "string",
+          "pattern": "^https?://[^\\s?#]+$",
+          "description": "For the csi operation: the namespace of this one published CSI document (e.g. https://example.com/csi/postgresql-crm). Every mapping entry gets a mapping id under it and the mapping is also written as physicalMapping. Use a distinct URI per published document; two documents under one URI mint the same ids. Omitted: the document carries no ids, as before."
         }
       }
     },

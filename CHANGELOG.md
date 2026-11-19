@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+Additive on CSI version `"1"` (issue #42; CDF `unified-ontology-mapping-architecture.md`
+§8.1). Without a publisher URI, `to_csi` writes the same document as before, unless the
+analysis already uses a key now reserved for mapping ids (see below).
+
+### Added
+- **`physicalMapping`, the generalized name of `arangoPhysicalMapping`.** The same object
+  under a second key; `arangoPhysicalMapping` stays required, so v1 readers keep working.
+  `from_csi` reads the old key, else the new one, and refuses a document whose two keys
+  differ; `validate_csi` reports it.
+- **Relational sources.** An entity mapping, or a relationship mapping read from a join
+  table, may carry `relation`
+  (`{kind: "table"|"view", schema, name}`) and `columns` (`[{name, sqlType, nullable}]`).
+  They travel whether or not a publisher URI is given. `style` is unchanged.
+- **Publisher-minted mapping ids.** `to_csi(..., publisher_uri=...)` (tool:
+  `outputOptions.csiPublisherUri`) records `provenance.publisher.uri` and gives every
+  entity and relationship mapping an `id`, every entity and relationship property a
+  `propertyIds` entry (beside `properties`; the property mapping stays strict) and every
+  lifted foreign-key `reference` an `id`, then writes `physicalMapping`. The URI is the
+  namespace of one published document: use a distinct one per document. Ids are built
+  from names, so exporting again or reordering gives the same ids; an id already present
+  is never replaced, so an id is stable across a `from_csi` round trip; a fresh analysis
+  that renames an entity or property gets a new id (carrying ids across a rename is #52).
+  `from_csi` keeps
+  ids, relational details and the publisher (`metadata.publisherUri`), so
+  `to_csi(from_csi(doc))` writes them again. Once any id is present, `validate_csi`
+  requires the publisher, full coverage, ids under it, and no duplicates. A conceptual
+  relationship with no physical mapping and no `reference` gets no id.
+- **`to_csi` never returns a document `validate_csi` refuses.** It runs the identity
+  check before returning and raises `SchemaAnalyzerError` (`INVALID_REQUEST`; the `csi`
+  tool operation answers `ok: false`) when ids carried from one publisher are exported
+  under another (both URIs named; ids are never re-minted) or a `propertyIds` entry names
+  a property that was removed (never dropped silently). A malformed publisher URI, from
+  the argument or from `metadata.publisherUri`, is refused the same way and names its
+  field; before, the latter reached the tool as `INTERNAL_ERROR`. Both sources are
+  checked, and an explicit URI that differs from `metadata.publisherUri` is refused with
+  both values named; the `csi` tool operation names the field as
+  `outputOptions.csiPublisherUri`. To move a document to a new publisher on purpose,
+  remove its mapping ids and `metadata.publisherUri`, then supply the new URI.
+- **Reserved keys.** `id` and `propertyIds` on a mapping entry, and `id` on a foreign-key
+  `reference`, are reserved for mapping ids; `to_csi` refuses an analysis that uses them
+  otherwise, even without a publisher URI. No known producer writes them.
+- The CSI documentation lists the `csi` tool operation and `csiPublisherUri`
+  (`docs/tool-contract/v1/README.md`, `docs/PRD.md`).
+- The 0.20.0 CSI schema is a test fixture, so the old-reader compatibility test runs in
+  CI, which checks out without tags.
+
 ## 0.20.0 — 2026-11-16
 
 A minor version: an attribute that holds a list is marked, and CSI gains version

@@ -220,7 +220,7 @@ The system exposes a **stable non-interactive JSON API** defined by JSON Schema:
 - **Request schema**: `docs/tool-contract/v1/request.schema.json`
 - **Response schema**: `docs/tool-contract/v1/response.schema.json`
 
-Operations: `analyze`, `snapshot`, `export` (targets `cypher` | `sparql`), `docs`, `owl` (`outputOptions.owlFormat` `turtle` | `jsonld`), `diff` (`input.analysis` vs `input.previousAnalysis` → `diff_analyses`), `resolve` (`build_cypher_resolution_index`), and `csi` (`to_csi`).
+Operations: `analyze`, `snapshot`, `export` (targets `cypher` | `sparql`), `docs`, `owl` (`outputOptions.owlFormat` `turtle` | `jsonld`), `diff` (`input.analysis` vs `input.previousAnalysis` → `diff_analyses`), `resolve` (`build_cypher_resolution_index`), and `csi` (`to_csi`; `outputOptions.csiPublisherUri` mints mapping ids, see the CSI relational mappings paragraph).
 
 All requests and responses are validated against the JSON Schema. Failures return structured `{ "ok": false, "error": { "code": "...", "message": "..." } }` responses for both expected errors (`SchemaAnalyzerError`) and unexpected exceptions.
 
@@ -624,6 +624,44 @@ attribute, so equality on every other attribute stays index-friendly. The reader
 is arango-sparql-py (`phys:multiValued` / `multiValued`). **Implementation**:
 `csi/v1/csi.schema.json` (`multiValued`, the second `allOf` rule),
 `csi/__init__.py` (`_csi_version_for`).
+
+**CSI relational mappings and mapping ids (issue #42) — _shipped_.** Additive on every
+CSI version; `csiVersion` is unchanged. **Relational source:** an entity mapping, and a
+relationship mapping read from a join table, may carry `relation`
+(`{kind: "table"|"view", schema?, name}`) and `columns` (`[{name, sqlType, nullable?}]`),
+so a consumer can name the table and SQL types without reading R2RML. No new `style`
+is added, and the two keys travel with or without a publisher. **Mapping ids:** given a
+publisher URI (`to_csi(publisher_uri=...)`, tool `outputOptions.csiPublisherUri`, or
+`metadata.publisherUri` kept by `from_csi`), `to_csi` records
+`provenance.publisher.uri` and gives every entity and relationship mapping an `id`,
+every property mapping a `propertyIds` entry (beside `properties`, which stays strict)
+and every lifted foreign-key `reference` an `id`. A conceptual relationship with neither
+a physical mapping nor a `reference` is not a mapping entry and gets no id. The URI is
+an absolute http(s) URI without query or fragment, and is the namespace of **one**
+published CSI document: the publisher gives each document its own, so no two documents
+share an id. Ids are minted from conceptual names only when missing; an id already present
+is never replaced. An id is stable across a `from_csi` round trip, and not across a fresh
+analysis that renames an entity or property; carrying ids forward across a rename is #52.
+There is no id registry. A relationship with no mapping entry getting an id is #53.
+`id` and `propertyIds` on a mapping entry, and `id` on a foreign-key `reference`, are
+reserved for mapping ids; `to_csi` refuses an analysis that uses them otherwise. **Alias:** with a
+publisher URI, `to_csi` also writes `physicalMapping`, equal to `arangoPhysicalMapping`,
+which stays required for v1 readers; without one the output is byte-identical to earlier
+releases, except that an analysis using the reserved keys above is refused. **Refusals:** `validate_csi` requires, once any id is present, a publisher,
+complete coverage, ids under the publisher, no duplicates, `propertyIds` keys equal to
+`properties` keys and equal alias copies. `to_csi` runs the same check before it returns
+and raises `SchemaAnalyzerError` (`INVALID_REQUEST`) rather than write a document that
+fails it: ids carried from another publisher are refused (both URIs named), not
+re-minted, and a `propertyIds` entry whose property was removed is refused, not dropped.
+A malformed publisher URI is refused the same way, naming its field; an explicit URI and
+`metadata.publisherUri` are both checked, and when both are given they must be equal. To move
+a document to a new publisher on purpose, remove its mapping ids and `metadata.publisherUri`,
+then supply the new URI. Producers (RSA,
+r2g `export-csi`) emit these keys in their own repositories. **Implementation**:
+`csi/v1/csi.schema.json` (`$defs/MappingId`, `PropertyIds`, `RelationalSource`,
+`RelationalColumn`, `physicalMapping`), `csi/__init__.py` (`to_csi`, `_mint_mapping_ids`,
+`_identity_issues`, `from_csi`), `csi/naming.py` (`propertyIds` follow renames),
+`tool.py` (`csiPublisherUri`).
 
 #### **6.1. Additional Mapping Styles**
 - `TRIPLE` — _Shipped in 0.7.0_ as an additive annotation

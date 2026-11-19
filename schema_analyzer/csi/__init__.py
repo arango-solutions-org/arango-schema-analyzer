@@ -26,13 +26,17 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+from collections import Counter
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any, cast
+from urllib.parse import quote
 
 from jsonschema import Draft202012Validator
 
 from ..defaults import FALLBACK_LIBRARY_VERSION
+from ..errors import SchemaAnalyzerError
 from ..utils import normalize_analysis_dict
 
 CSI_VERSION = "1"
@@ -62,6 +66,9 @@ PROPERTY_DESCRIPTIVE_KEYS = (
     "multiValued",
 )
 
+#: A publisher URI or mapping id: absolute http(s), no query or fragment (``$defs/MappingId``).
+_MAPPING_ID_RE = re.compile(r"^https?://[^\s?#]+$")
+
 
 def _library_version() -> str:
     try:
@@ -84,12 +91,14 @@ def build_provenance(
     source: dict[str, Any] | None = None,
     producer: str = "arango-schema-analyzer",
     producer_version: str | None = None,
+    publisher_uri: str | None = None,
 ) -> dict[str, Any]:
     """Build the CSI ``provenance`` envelope from analysis metadata.
 
     ``source`` defaults to an ArangoDB descriptor keyed off the snapshot
     fingerprint already on the metadata; callers (e.g. the tool layer) may pass
-    a richer ``{"kind", "ref", "fingerprint"}``.
+    a richer ``{"kind", "ref", "fingerprint"}``. ``publisher_uri`` is recorded as
+    ``publisher.uri``, the namespace the document's mapping ids are minted under.
     """
     meta = metadata if isinstance(metadata, dict) else {}
     fingerprint = _meta_get(meta, "physicalSchemaFingerprint", "physical_schema_fingerprint")
@@ -123,6 +132,8 @@ def build_provenance(
     predecessor = _meta_get(meta, "predecessorFingerprint", "predecessor_fingerprint")
     if isinstance(predecessor, str) and predecessor:
         prov["predecessorFingerprint"] = predecessor
+    if publisher_uri:
+        prov["publisher"] = {"uri": publisher_uri}
     return prov
 
 
@@ -136,6 +147,7 @@ def to_csi(
     owl_naming: bool = True,
     entity_overrides: dict[str, str] | None = None,
     property_overrides: dict[str, str] | None = None,
+    publisher_uri: str | None = None,
 ) -> dict[str, Any]:
     """Produce a CSI v1 document from an ``AnalysisResult`` or serialized dict.
 
@@ -144,11 +156,76 @@ def to_csi(
     properties/relationships lowerCamel — recording each renamed property's
     physical field so consumers resolve back to stored names. Pass
     ``owl_naming=False`` for a raw, physically-named document.
+
+    ``publisher_uri`` (issue #42; else the analysis's ``metadata.publisherUri``, which
+    :func:`from_csi` keeps) is the namespace of this one published document. With it,
+    every mapping entry gets a mapping id under it — ids already on an entry are kept,
+    only missing ones are minted — and the mapping is also written under
+    ``physicalMapping``, equal to ``arangoPhysicalMapping``. Without it the document is
+    exactly what it was before: no ids, no ``physicalMapping`` key.
+
+    Raises :class:`SchemaAnalyzerError` (``INVALID_REQUEST``) rather than return a
+    document :func:`validate_csi` would refuse: a malformed publisher URI, ids carried
+    from another publisher (never re-minted), or a ``propertyIds`` key whose property
+    is gone (never dropped silently).
+    """
+    return _to_csi(
+        analysis,
+        direction=direction,
+        source=source,
+        producer=producer,
+        producer_version=producer_version,
+        owl_naming=owl_naming,
+        entity_overrides=entity_overrides,
+        property_overrides=property_overrides,
+        publisher_uri=publisher_uri,
+    )
+
+
+def _to_csi(
+    analysis: Any,
+    *,
+    direction: str = "reverse",
+    source: dict[str, Any] | None = None,
+    producer: str = "arango-schema-analyzer",
+    producer_version: str | None = None,
+    owl_naming: bool = True,
+    entity_overrides: dict[str, str] | None = None,
+    property_overrides: dict[str, str] | None = None,
+    publisher_uri: str | None = None,
+    publisher_field: str = "publisher_uri",
+) -> dict[str, Any]:
+    """:func:`to_csi`, naming the publisher URI as ``publisher_field`` in its errors.
+
+    The tool passes ``outputOptions.csiPublisherUri`` so a caller is pointed at the
+    field they set.
     """
     data = normalize_analysis_dict(analysis)
     conceptual = data.get("conceptualSchema")
     physical = data.get("physicalMapping")
     metadata = data.get("metadata")
+    # Both sources are checked, so a malformed or conflicting one is never hidden by the other.
+    supplied = {publisher_field: publisher_uri}
+    if isinstance(metadata, dict) and metadata.get("publisherUri") is not None:
+        supplied["metadata.publisherUri"] = metadata["publisherUri"]
+    uris: dict[str, str] = {}
+    for field, value in supplied.items():
+        if value is None:
+            continue
+        if not isinstance(value, str) or not _MAPPING_ID_RE.match(value.rstrip("/")):
+            raise SchemaAnalyzerError(
+                f"{field} must be an absolute http(s) URI without query or fragment: {value!r}",
+                code="INVALID_REQUEST",
+            )
+        uris[field] = value.rstrip("/")
+    if len(set(uris.values())) > 1:
+        raise SchemaAnalyzerError(
+            f"{publisher_field} {uris[publisher_field]!r} differs from metadata.publisherUri "
+            f"{uris['metadata.publisherUri']!r}, under which this analysis's mapping ids were published; "
+            "ids are kept, never re-minted under another publisher",
+            code="INVALID_REQUEST",
+        )
+    publisher_uri = next(iter(uris.values()), None)
 
     doc = {
         "csiVersion": CSI_VERSION,
@@ -162,6 +239,7 @@ def to_csi(
             source=source,
             producer=producer,
             producer_version=producer_version,
+            publisher_uri=publisher_uri,
         ),
     }
     if owl_naming:
@@ -169,7 +247,49 @@ def to_csi(
 
         doc = apply_owl_naming(doc, entity_overrides=entity_overrides, property_overrides=property_overrides)
     doc = _lift_attribute_references(doc)
-    return _settle_property_mappings(doc, metadata if isinstance(metadata, dict) else {})
+    doc = _settle_property_mappings(doc, metadata if isinstance(metadata, dict) else {})
+    if publisher_uri:
+        doc = _mint_mapping_ids(doc, publisher_uri)
+        doc["physicalMapping"] = copy.deepcopy(doc["arangoPhysicalMapping"])
+    issues = _identity_issues(doc)
+    if issues:
+        raise SchemaAnalyzerError(
+            "refusing to write a CSI document with invalid mapping ids: " + "; ".join(issues),
+            code="INVALID_REQUEST",
+        )
+    return doc
+
+
+def _mint_mapping_ids(doc: dict[str, Any], base: str) -> dict[str, Any]:
+    """Give every mapping entry without an id one under *base* (issue #42).
+
+    An id an entry already carries is never replaced, so an id survives a rename once
+    it has been published. A new id is built from names, not positions, so exporting
+    again or reordering mints the same ids.
+    """
+    doc = copy.deepcopy(doc)  # never mutate the caller's analysis
+
+    def seg(name: str) -> str:
+        return quote(name, safe="")
+
+    physical = doc["arangoPhysicalMapping"]
+    for kind, label in (("entities", "entity"), ("relationships", "relationship")):
+        specs = physical.get(kind)
+        for name, spec in specs.items() if isinstance(specs, dict) else []:
+            if not isinstance(spec, dict):
+                continue
+            prefix = f"{base}/mapping/{label}/{seg(name)}"
+            spec.setdefault("id", prefix)
+            props = spec.get("properties")
+            ids = spec.setdefault("propertyIds", {}) if isinstance(props, dict) and props else None
+            if isinstance(props, dict) and isinstance(ids, dict):  # a value present, valid or not, is kept
+                for p in props:
+                    ids.setdefault(p, f"{prefix}/property/{seg(p)}")
+    conceptual = doc.get("conceptualModel")
+    for rel in conceptual.get("relationships") or [] if isinstance(conceptual, dict) else []:
+        if isinstance(rel, dict) and isinstance(rel.get("reference"), dict):
+            rel["reference"].setdefault("id", f"{base}/mapping/relationship/{seg(str(rel.get('type')))}/reference")
+    return doc
 
 
 def _uses_path(physical: Any) -> bool:
@@ -264,7 +384,17 @@ def _settle_property_mappings(doc: dict[str, Any], metadata: dict[str, Any]) -> 
 
 
 #: Keys of a ``FOREIGN_KEY`` physical mapping carried onto the conceptual relationship.
-_REFERENCE_FIELDS = ("fromCollection", "fromFields", "toCollection", "toKeyFields", "confidence", "method", "evidence")
+#: ``id`` is its mapping identity (issue #42); it travels with the reference both ways.
+_REFERENCE_FIELDS = (
+    "fromCollection",
+    "fromFields",
+    "toCollection",
+    "toKeyFields",
+    "confidence",
+    "method",
+    "evidence",
+    "id",
+)
 
 
 def _lift_attribute_references(doc: dict[str, Any]) -> dict[str, Any]:
@@ -336,9 +466,19 @@ def from_csi(csi: dict[str, Any]) -> dict[str, Any]:
     Accepts ``csiVersion`` ``"1"``, ``"1.1"`` and ``"1.2"``; a property mapping's ``path``
     (a value inside a nested object) and ``multiValued`` (an attribute holding a list) are
     carried through unchanged, so ``to_csi`` → ``from_csi`` round-trips them.
+
+    The mapping is read from ``arangoPhysicalMapping``, else from its alias
+    ``physicalMapping``; a document carrying both with different values is refused.
+    Mapping ids, ``relation`` / ``columns`` and ``provenance.publisher.uri`` (as
+    ``metadata.publisherUri``) are kept, so ``to_csi`` writes the same ids again.
     """
     conceptual = csi.get("conceptualModel")
     physical = csi.get("arangoPhysicalMapping")
+    if "physicalMapping" in csi:
+        if physical is None:
+            physical = csi["physicalMapping"]
+        elif csi["physicalMapping"] != physical:
+            raise ValueError("physicalMapping and arangoPhysicalMapping differ; a CSI document must carry one mapping")
     prov = csi.get("provenance")
     prov = prov if isinstance(prov, dict) else {}
 
@@ -350,6 +490,9 @@ def from_csi(csi: dict[str, Any]) -> dict[str, Any]:
     src = prov.get("source")
     if isinstance(src, dict) and isinstance(src.get("fingerprint"), str):
         metadata["physicalSchemaFingerprint"] = src["fingerprint"]
+    publisher = prov.get("publisher")
+    if isinstance(publisher, dict) and isinstance(publisher.get("uri"), str):
+        metadata["publisherUri"] = publisher["uri"]
 
     conceptual, physical = _restore_attribute_references(conceptual, physical)
     return {
@@ -359,6 +502,64 @@ def from_csi(csi: dict[str, Any]) -> dict[str, Any]:
         "physicalMapping": physical if isinstance(physical, dict) else {"entities": {}, "relationships": {}},
         "metadata": metadata,
     }
+
+
+#: Marks a ``propertyIds`` key with no matching ``properties`` key in :func:`_identity_issues`.
+_NO_PROPERTY = object()
+
+
+def _identity_issues(document: dict[str, Any]) -> list[str]:
+    """What JSON Schema cannot check about the alias and the mapping ids (issue #42).
+
+    * ``physicalMapping``, when present beside ``arangoPhysicalMapping``, equals it.
+    * Once any mapping id is present the set is complete — every entity and relationship
+      mapping, every property (``propertyIds`` keys are exactly the ``properties`` keys)
+      and every lifted ``reference`` — and every id is unique and lies under
+      ``provenance.publisher.uri``. A document without ids claims no identity.
+    """
+    if not isinstance(document, dict):
+        return []
+    issues: list[str] = []
+    physical = document.get("arangoPhysicalMapping")
+    if "physicalMapping" in document and physical is not None and document["physicalMapping"] != physical:
+        issues.append("physicalMapping differs from arangoPhysicalMapping")
+
+    ids: list[tuple[str, Any]] = []  # (where, id; None when absent, _NO_PROPERTY for a stray propertyIds key)
+    for kind in ("entities", "relationships"):
+        specs = physical.get(kind) if isinstance(physical, dict) else None
+        for name, spec in specs.items() if isinstance(specs, dict) else []:
+            if not isinstance(spec, dict):
+                continue
+            where = f"arangoPhysicalMapping.{kind}.{name}"
+            ids.append((where, spec.get("id")))
+            raw_props, raw_ids = spec.get("properties"), spec.get("propertyIds")
+            props: dict[str, Any] = raw_props if isinstance(raw_props, dict) else {}
+            prop_ids: dict[str, Any] = raw_ids if isinstance(raw_ids, dict) else {}
+            ids.extend((f"{where}.propertyIds.{p}", prop_ids.get(p)) for p in props)
+            ids.extend((f"{where}.propertyIds.{p}", _NO_PROPERTY) for p in prop_ids if p not in props)
+    conceptual = document.get("conceptualModel")
+    for rel in conceptual.get("relationships") or [] if isinstance(conceptual, dict) else []:
+        if isinstance(rel, dict) and isinstance(rel.get("reference"), dict):
+            ids.append((f"conceptualModel.relationships.{rel.get('type')}.reference", rel["reference"].get("id")))
+
+    # Any id-carrying key present, even empty or stray, claims identity and is checked.
+    if all(i is None for _, i in ids):
+        return issues
+    prov = document.get("provenance")
+    publisher = prov.get("publisher") if isinstance(prov, dict) else None
+    base = publisher.get("uri") if isinstance(publisher, dict) else None
+    if not isinstance(base, str) or not base:
+        issues.append("mapping ids are present but provenance.publisher.uri is missing")
+    for where, mapping_id in ids:
+        if mapping_id is _NO_PROPERTY:
+            issues.append(f"{where} names no property in properties")
+        elif not isinstance(mapping_id, str) or not mapping_id:
+            issues.append(f"{where} has no mapping id")
+        elif isinstance(base, str) and base and not mapping_id.startswith(base.rstrip("/") + "/"):
+            issues.append(f"{where} id {mapping_id!r} is not under publisher {base!r}")
+    counts = Counter(i for _, i in ids if isinstance(i, str) and i)
+    issues.extend(f"duplicate mapping id {i!r}" for i, n in sorted(counts.items()) if n > 1)
+    return issues
 
 
 def load_csi_schema_v1() -> dict[str, Any]:
@@ -372,12 +573,13 @@ def load_csi_schema_v1() -> dict[str, Any]:
 def validate_csi(document: dict[str, Any], *, naming: bool = True) -> list[str]:
     """Return a sorted list of CSI v1 validation error messages (empty = valid).
 
-    Checks the JSON Schema and, unless ``naming=False``, the CC-12 OWL naming
-    convention on the conceptual layer (entities singular PascalCase,
-    properties/relationships lowerCamel).
+    Checks the JSON Schema, the mapping alias and mapping ids (:func:`_identity_issues`)
+    and, unless ``naming=False``, the CC-12 OWL naming convention on the conceptual
+    layer (entities singular PascalCase, properties/relationships lowerCamel).
     """
     validator = Draft202012Validator(load_csi_schema_v1())
     issues = [err.message for err in sorted(validator.iter_errors(document), key=str)]
+    issues.extend(_identity_issues(document))
     if naming:
         from .naming import naming_issues
 
