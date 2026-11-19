@@ -36,6 +36,7 @@ from urllib.parse import quote
 from jsonschema import Draft202012Validator
 
 from ..defaults import FALLBACK_LIBRARY_VERSION
+from ..errors import SchemaAnalyzerError
 from ..utils import normalize_analysis_dict
 
 CSI_VERSION = "1"
@@ -162,17 +163,38 @@ def to_csi(
     only missing ones are minted — and the mapping is also written under
     ``physicalMapping``, equal to ``arangoPhysicalMapping``. Without it the document is
     exactly what it was before: no ids, no ``physicalMapping`` key.
+
+    Raises :class:`SchemaAnalyzerError` (``INVALID_REQUEST``) rather than return a
+    document :func:`validate_csi` would refuse: a malformed publisher URI, ids carried
+    from another publisher (never re-minted), or a ``propertyIds`` key whose property
+    is gone (never dropped silently).
     """
     data = normalize_analysis_dict(analysis)
     conceptual = data.get("conceptualSchema")
     physical = data.get("physicalMapping")
     metadata = data.get("metadata")
-    if publisher_uri is None and isinstance(metadata, dict) and isinstance(metadata.get("publisherUri"), str):
-        publisher_uri = metadata["publisherUri"]
-    if publisher_uri is not None:
-        publisher_uri = publisher_uri.rstrip("/")
-        if not _MAPPING_ID_RE.match(publisher_uri):
-            raise ValueError(f"publisher URI must be absolute http(s), without query or fragment: {publisher_uri!r}")
+    # Both sources are checked, so a malformed or conflicting one is never hidden by the other.
+    supplied = {"publisher_uri": publisher_uri}
+    if isinstance(metadata, dict) and metadata.get("publisherUri") is not None:
+        supplied["metadata.publisherUri"] = metadata["publisherUri"]
+    uris: dict[str, str] = {}
+    for field, value in supplied.items():
+        if value is None:
+            continue
+        if not isinstance(value, str) or not _MAPPING_ID_RE.match(value.rstrip("/")):
+            raise SchemaAnalyzerError(
+                f"{field} must be an absolute http(s) URI without query or fragment: {value!r}",
+                code="INVALID_REQUEST",
+            )
+        uris[field] = value.rstrip("/")
+    if len(set(uris.values())) > 1:
+        raise SchemaAnalyzerError(
+            f"publisher_uri {uris['publisher_uri']!r} differs from metadata.publisherUri "
+            f"{uris['metadata.publisherUri']!r}, under which this analysis's mapping ids were published; "
+            "ids are kept, never re-minted under another publisher",
+            code="INVALID_REQUEST",
+        )
+    publisher_uri = next(iter(uris.values()), None)
 
     doc = {
         "csiVersion": CSI_VERSION,
@@ -198,6 +220,12 @@ def to_csi(
     if publisher_uri:
         doc = _mint_mapping_ids(doc, publisher_uri)
         doc["physicalMapping"] = copy.deepcopy(doc["arangoPhysicalMapping"])
+    issues = _identity_issues(doc)
+    if issues:
+        raise SchemaAnalyzerError(
+            "refusing to write a CSI document with invalid mapping ids: " + "; ".join(issues),
+            code="INVALID_REQUEST",
+        )
     return doc
 
 

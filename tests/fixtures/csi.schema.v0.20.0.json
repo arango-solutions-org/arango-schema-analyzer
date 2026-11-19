@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arangodb.com/schema-analyzer/csi/v1/csi.schema.json",
+  "title": "Conceptual Schema Interchange (CSI) v1",
+  "description": "Direction-agnostic interchange document for a conceptual model + its ArangoDB physical mapping. Produced by arango-schema-analyzer (reverse) or a forward relational->graph tool (e.g. R2G). The three core blocks are the stable contract; detection enrichments ride along as optional additive fields (additionalProperties: true) and are never required of a consumer. Exception: an entity property mapping is strict (see $defs/PropertyMapping), because an ignored location key is how a reader answers from the wrong field. Version 1.1 adds `path` for a value inside a nested object; a document declares \"1.1\" only when it uses `path`. Version 1.2 adds `multiValued` for an attribute that holds a list, one value per element; a document declares \"1.2\" only when it uses `multiValued`.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["csiVersion", "conceptualModel", "arangoPhysicalMapping", "provenance"],
+  "allOf": [
+    {
+      "description": "`path` needs csiVersion 1.1: a reader of version 1 would ignore it and read the wrong field, so a \"1\" document must not carry the key at all (not even null).",
+      "if": { "required": ["csiVersion"], "properties": { "csiVersion": { "const": "1" } } },
+      "then": {
+        "properties": {
+          "arangoPhysicalMapping": {
+            "properties": {
+              "entities": {
+                "additionalProperties": {
+                  "properties": {
+                    "properties": { "additionalProperties": { "not": { "required": ["path"] } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "`multiValued` needs csiVersion 1.2: a reader of version 1 or 1.1 would ignore it and read a whole list as one value, so a \"1\" or \"1.1\" document must not carry the key at all.",
+      "if": { "required": ["csiVersion"], "properties": { "csiVersion": { "enum": ["1", "1.1"] } } },
+      "then": {
+        "properties": {
+          "arangoPhysicalMapping": {
+            "properties": {
+              "entities": {
+                "additionalProperties": {
+                  "properties": {
+                    "properties": { "additionalProperties": { "not": { "required": ["multiValued"] } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "csiVersion": { "type": "string", "enum": ["1", "1.1", "1.2"] },
+
+    "conceptualModel": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["entities", "relationships"],
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "labels": { "type": "array", "items": { "type": "string" } },
+              "properties": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["type", "fromEntity", "toEntity"],
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "fromEntity": { "type": "string", "minLength": 1 },
+              "toEntity": { "type": "string", "minLength": 1 },
+              "properties": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        },
+        "properties": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+
+    "arangoPhysicalMapping": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["entities", "relationships"],
+      "properties": {
+        "entities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["style"],
+            "properties": {
+              "style": { "type": "string", "enum": ["COLLECTION", "LABEL", "LABELS"] },
+              "collectionName": { "type": "string" },
+              "typeField": { "type": "string" },
+              "typeValue": { "type": "string" },
+              "labelsField": { "type": "string" },
+              "labelValue": { "type": "string" },
+              "properties": {
+                "type": "object",
+                "description": "Conceptual property name -> where its value is stored.",
+                "additionalProperties": { "$ref": "#/$defs/PropertyMapping" }
+              }
+            }
+          }
+        },
+        "relationships": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["style"],
+            "not": { "required": ["collectionName"] },
+            "properties": {
+              "style": { "type": "string", "enum": ["DEDICATED_COLLECTION", "GENERIC_WITH_TYPE"] },
+              "edgeCollectionName": { "type": "string" },
+              "typeField": { "type": "string" },
+              "typeValue": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["producer", "direction", "source"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1 },
+        "producerVersion": { "type": "string" },
+        "direction": { "type": "string", "enum": ["reverse", "forward"] },
+        "source": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "minLength": 1 },
+            "ref": { "type": "string" },
+            "fingerprint": { "type": ["string", "null"] }
+          }
+        },
+        "generatedAt": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "transactionTime": { "type": ["string", "null"] },
+        "validTime": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": { "from": { "type": "string" } }
+        },
+        "validTimeSource": { "type": "string", "enum": ["catalog", "event", "file", "fingerprint-continuity", "observed"] },
+        "predecessorFingerprint": { "type": ["string", "null"] }
+      }
+    }
+  },
+
+  "$defs": {
+    "PropertyMapping": {
+      "description": "Where one entity property is stored. `field` is one literal attribute name, dots included (\"address.city\" is a single top-level attribute). `path` names a value inside a nested object, one name per level ([\"address\", \"city\"]) and needs csiVersion 1.1. `multiValued` says the attribute holds a list, one value per element, and needs csiVersion 1.2. At most one of the two; with neither, the property name is the attribute. Besides them, only the descriptive keys below or an ignorable `x-` key are allowed: a reader refuses anything else rather than ignore a key that might say where the value lives. Relationship property mappings keep the additive rule.",
+      "type": "object",
+      "not": { "required": ["field", "path"] },
+      "properties": {
+        "field": { "type": "string", "minLength": 1 },
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\x00-\\x1f`\\\\]{1,256}$",
+            "description": "One attribute name: 1-256 characters, no control character, backtick or backslash. It may contain a dot; it is still one level."
+          }
+        },
+        "type": { "type": "string" },
+        "indexed": { "type": "boolean" },
+        "unique": { "type": "boolean" },
+        "required": { "type": "boolean" },
+        "role": { "type": "string" },
+        "sentinelValues": { "type": "array" },
+        "numericLike": { "type": "boolean" },
+        "sampleValues": { "type": "array" },
+        "multiValued": {
+          "type": "boolean",
+          "description": "True: the attribute holds a list, and each element is one value of the property (a triple per element). `type` names the type of one element. Needs csiVersion 1.2. Absent or false: the stored value, list or not, is one value."
+        }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    }
+  }
+}

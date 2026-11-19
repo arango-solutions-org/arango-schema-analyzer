@@ -10,7 +10,8 @@ Additive on CSI version `"1"` (issue #42; CDF `unified-ontology-mapping-architec
   under a second key; `arangoPhysicalMapping` stays required, so v1 readers keep working.
   `from_csi` reads the old key, else the new one, and refuses a document whose two keys
   differ; `validate_csi` reports it.
-- **Relational sources.** An entity mapping may carry `relation`
+- **Relational sources.** An entity mapping, or a relationship mapping read from a join
+  table, may carry `relation`
   (`{kind: "table"|"view", schema, name}`) and `columns` (`[{name, sqlType, nullable}]`).
   They travel whether or not a publisher URI is given. `style` is unchanged.
 - **Publisher-minted mapping ids.** `to_csi(..., publisher_uri=...)` (tool:
@@ -23,7 +24,21 @@ Additive on CSI version `"1"` (issue #42; CDF `unified-ontology-mapping-architec
   is never replaced, so one carried through `from_csi` survives a rename. `from_csi` keeps
   ids, relational details and the publisher (`metadata.publisherUri`), so
   `to_csi(from_csi(doc))` writes them again. Once any id is present, `validate_csi`
-  requires the publisher, full coverage, ids under it, and no duplicates.
+  requires the publisher, full coverage, ids under it, and no duplicates. A conceptual
+  relationship with no physical mapping and no `reference` gets no id.
+- **`to_csi` never returns a document `validate_csi` refuses.** It runs the identity
+  check before returning and raises `SchemaAnalyzerError` (`INVALID_REQUEST`; the `csi`
+  tool operation answers `ok: false`) when ids carried from one publisher are exported
+  under another (both URIs named; ids are never re-minted) or a `propertyIds` entry names
+  a property that was removed (never dropped silently). A malformed publisher URI, from
+  the argument or from `metadata.publisherUri`, is refused the same way and names its
+  field; before, the latter reached the tool as `INTERNAL_ERROR`. Both sources are
+  checked, and an explicit URI that differs from `metadata.publisherUri` is refused with
+  both values named.
+- The CSI documentation lists the `csi` tool operation and `csiPublisherUri`
+  (`docs/tool-contract/v1/README.md`, `docs/PRD.md`).
+- The 0.20.0 CSI schema is a test fixture, so the old-reader compatibility test runs in
+  CI, which checks out without tags.
 
 ## 0.20.0 — 2026-11-16
 

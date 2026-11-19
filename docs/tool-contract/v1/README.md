@@ -38,6 +38,18 @@ The tool is designed to be callable via:
   health-score delta)
 - `resolve`: flattened label/relationship-type → AQL resolution index for a
   Cypher transpiler, built from `input.analysis`
+- `csi`: Conceptual Schema Interchange v1 document (`to_csi`) for
+  `input.analysis`. `outputOptions.csiPublisherUri` (an absolute http(s) URI
+  without query or fragment, one per published document) records
+  `provenance.publisher.uri`, gives every mapping entry an id under it and also
+  writes `physicalMapping` beside `arangoPhysicalMapping`; without it the
+  document is unchanged. The URI may instead come from
+  `input.analysis.metadata.publisherUri` (kept by `from_csi`). Ids already in the
+  analysis are kept, never re-minted. The request fails with `INVALID_REQUEST`,
+  naming the field or the offending ids, when the publisher URI is malformed, when
+  `csiPublisherUri` and `metadata.publisherUri` differ, when carried ids belong to
+  a different publisher, or when a `propertyIds` entry names
+  a property that no longer exists
 
 ## Request / Response
 

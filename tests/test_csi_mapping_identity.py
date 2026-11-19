@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +12,12 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from schema_analyzer.csi import from_csi, to_csi, validate_csi
+from schema_analyzer.errors import SchemaAnalyzerError
 from schema_analyzer.tool import run_tool
 from schema_analyzer.tool_contract_v1 import validate_response_v1
 
-ROOT = Path(__file__).resolve().parents[1]
+#: The CSI schema exactly as released in 0.20.0, committed so CI needs no git tags.
+SCHEMA_0_20_0 = Path(__file__).resolve().parent / "fixtures" / "csi.schema.v0.20.0.json"
 BASE = "https://pub.example/csi/crm"
 
 ANALYSIS: dict[str, Any] = {
@@ -101,21 +102,8 @@ def test_relational_metadata_does_not_need_a_publisher():
     assert customer["columns"][0]["sqlType"] == "varchar(255)"
 
 
-def _released_schema() -> dict[str, Any]:
-    try:
-        text = subprocess.run(
-            ["git", "-C", str(ROOT), "show", "v0.20.0:schema_analyzer/csi/v1/csi.schema.json"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pytest.skip("v0.20.0 tag not available")
-    return json.loads(text)
-
-
 def test_enhanced_output_is_valid_for_a_0_20_0_reader():
-    validator = Draft202012Validator(_released_schema())
+    validator = Draft202012Validator(json.loads(SCHEMA_0_20_0.read_text()))
     assert [e.message for e in validator.iter_errors(to_csi(ANALYSIS, publisher_uri=BASE))] == []
 
 
@@ -137,9 +125,30 @@ def test_tables_and_views_validate():
         (None, [{"name": "email"}]),
     ],
 )
-def test_bad_relational_metadata_is_refused(relation, columns):
+@pytest.mark.parametrize("kind, name", [("entities", "Customer"), ("relationships", "placed")])
+def test_bad_relational_metadata_is_refused(kind, name, relation, columns):
     csi = to_csi(ANALYSIS)
-    spec = csi["arangoPhysicalMapping"]["entities"]["Customer"]
+    spec = csi["arangoPhysicalMapping"][kind][name]
+    if relation is not None:
+        spec["relation"] = relation
+    if columns is not None:
+        spec["columns"] = columns
+    assert validate_csi(csi) != []
+
+
+def test_a_join_table_relationship_can_name_its_table():
+    analysis = copy.deepcopy(ANALYSIS)
+    placed = analysis["physicalMapping"]["relationships"]["placed"]
+    placed["relation"] = {"kind": "table", "schema": "sales", "name": "customer_order"}
+    placed["columns"] = [{"name": "placed_at", "sqlType": "timestamp"}]
+    assert validate_csi(to_csi(analysis)) == []
+    assert validate_csi(to_csi(analysis, publisher_uri=BASE)) == []
+
+
+@pytest.mark.parametrize("relation, columns", [({"kind": "sequence", "nonsense": 1}, None), (None, "not-a-list")])
+def test_arthur_s_relationship_examples_are_refused(relation, columns):
+    csi = to_csi(ANALYSIS)
+    spec = csi["arangoPhysicalMapping"]["relationships"]["placed"]
     if relation is not None:
         spec["relation"] = relation
     if columns is not None:
@@ -241,12 +250,31 @@ def test_existing_property_ids_are_never_overwritten():
     order = analysis["physicalMapping"]["entities"]["Order"]
     order["properties"] = {"total": {"field": "total"}}
     order["propertyIds"] = {"total": "", "ghost": f"{BASE}/stray"}
-    csi = to_csi(analysis, publisher_uri=BASE)
-    out = csi["arangoPhysicalMapping"]["entities"]["Order"]["propertyIds"]
-    assert out == {"total": "", "ghost": f"{BASE}/stray"}  # kept as given, not replaced or dropped
-    issues = validate_csi(csi)
-    assert any("propertyIds.total has no mapping id" in i for i in issues)
-    assert any("propertyIds.ghost names no property" in i for i in issues)
+    before = copy.deepcopy(analysis)
+    with pytest.raises(SchemaAnalyzerError) as exc:  # refused, neither replaced nor dropped
+        to_csi(analysis, publisher_uri=BASE)
+    assert exc.value.code == "INVALID_REQUEST"
+    assert "propertyIds.total has no mapping id" in str(exc.value)
+    assert "propertyIds.ghost names no property" in str(exc.value)
+    assert analysis == before
+
+
+def _remove_customer_email(analysis: dict[str, Any]) -> None:
+    """Remove a published property from both layers, leaving its propertyIds entry behind."""
+    analysis["physicalMapping"]["entities"]["Customer"]["properties"].pop("email")
+    (customer,) = [e for e in analysis["conceptualSchema"]["entities"] if e["name"] == "Customer"]
+    customer["properties"] = []
+
+
+def test_a_removed_property_s_id_is_refused_not_dropped():
+    """Arthur's case 2: a published property is removed but its propertyIds entry stays."""
+    analysis = from_csi(to_csi(ANALYSIS, publisher_uri=BASE))
+    _remove_customer_email(analysis)
+    with pytest.raises(SchemaAnalyzerError) as exc:
+        to_csi(analysis)
+    assert exc.value.code == "INVALID_REQUEST"
+    assert "arangoPhysicalMapping.entities.Customer.propertyIds.email names no property" in str(exc.value)
+    assert analysis["physicalMapping"]["entities"]["Customer"]["propertyIds"]["email"].startswith(BASE)
 
 
 # ── Publisher namespace and duplicates ──────────────────────────────────────
@@ -274,8 +302,89 @@ def test_duplicate_ids_are_refused():
 
 
 def test_bad_publisher_uri_is_refused():
-    with pytest.raises(ValueError):
+    with pytest.raises(SchemaAnalyzerError) as exc:
         to_csi(ANALYSIS, publisher_uri="not-a-uri")
+    assert exc.value.code == "INVALID_REQUEST"
+    assert "publisher_uri" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", ["not-a-uri", 42])
+def test_bad_publisher_uri_in_metadata_is_refused(bad):
+    analysis = copy.deepcopy(ANALYSIS)
+    analysis["metadata"]["publisherUri"] = bad
+    with pytest.raises(SchemaAnalyzerError) as exc:
+        to_csi(analysis)
+    assert exc.value.code == "INVALID_REQUEST"
+    assert "metadata.publisherUri" in str(exc.value)
+
+
+def test_a_re_export_under_another_publisher_is_refused():
+    """Arthur's case 1: carried ids are never re-minted; the caller is told both publishers."""
+    other = "https://pub.example/csi/erp"
+    analysis = from_csi(to_csi(ANALYSIS, publisher_uri=BASE))
+    before = copy.deepcopy(analysis)
+    with pytest.raises(SchemaAnalyzerError) as exc:
+        to_csi(analysis, publisher_uri=other)
+    assert exc.value.code == "INVALID_REQUEST"
+    assert repr(BASE) in str(exc.value) and repr(other) in str(exc.value)
+    assert "metadata.publisherUri" in str(exc.value)
+    assert analysis == before
+    assert validate_csi(to_csi(analysis)) == []  # the original publisher still exports
+
+
+def test_carried_ids_without_publisher_metadata_are_still_refused():
+    """With metadata.publisherUri gone, the identity check still refuses foreign ids."""
+    analysis = from_csi(to_csi(ANALYSIS, publisher_uri=BASE))
+    del analysis["metadata"]["publisherUri"]
+    with pytest.raises(SchemaAnalyzerError) as exc:
+        to_csi(analysis, publisher_uri="https://pub.example/csi/erp")
+    assert exc.value.code == "INVALID_REQUEST"
+    assert f"is not under publisher {'https://pub.example/csi/erp'!r}" in str(exc.value)
+
+
+def _with_metadata_publisher(uri: Any) -> dict[str, Any]:
+    analysis = copy.deepcopy(ANALYSIS)
+    analysis["metadata"]["publisherUri"] = uri
+    return analysis
+
+
+def test_matching_explicit_and_metadata_publishers_proceed():
+    csi = to_csi(_with_metadata_publisher(BASE + "/"), publisher_uri=BASE)
+    assert csi == to_csi(ANALYSIS, publisher_uri=BASE)
+    assert validate_csi(csi) == []
+
+
+def test_metadata_publisher_alone_is_used():
+    assert to_csi(_with_metadata_publisher(BASE)) == to_csi(ANALYSIS, publisher_uri=BASE)
+
+
+def test_conflicting_publishers_are_refused_even_without_ids():
+    other = "https://pub.example/csi/erp"
+    with pytest.raises(SchemaAnalyzerError) as exc:
+        to_csi(_with_metadata_publisher(BASE), publisher_uri=other)
+    assert exc.value.code == "INVALID_REQUEST"
+    assert repr(BASE) in str(exc.value) and repr(other) in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "explicit, in_metadata, field",
+    [
+        ("not-a-uri", BASE, "publisher_uri"),
+        (BASE, "not-a-uri", "metadata.publisherUri"),
+        (BASE, 42, "metadata.publisherUri"),
+    ],
+)
+def test_a_malformed_publisher_is_refused_whichever_side_it_is_on(explicit, in_metadata, field):
+    with pytest.raises(SchemaAnalyzerError) as exc:
+        to_csi(_with_metadata_publisher(in_metadata), publisher_uri=explicit)
+    assert exc.value.code == "INVALID_REQUEST"
+    assert str(exc.value).startswith(f"{field} must be")
+
+
+def test_no_publisher_keeps_the_legacy_document():
+    csi = to_csi(ANALYSIS)
+    assert "physicalMapping" not in csi and "publisher" not in csi["provenance"]
+    assert csi == to_csi(from_csi(csi))
 
 
 def test_two_documents_get_disjoint_ids():
@@ -390,14 +499,62 @@ def test_path_raises_the_version_with_ids_too():
 # ── Tool ────────────────────────────────────────────────────────────────────
 
 
-def _csi_op(output_options: dict[str, Any] | None = None) -> dict[str, Any]:
-    req: dict[str, Any] = {"contractVersion": "1", "operation": "csi", "input": {"analysis": ANALYSIS}}
+def _csi_op(output_options: dict[str, Any] | None = None, analysis: dict[str, Any] = ANALYSIS) -> dict[str, Any]:
+    req: dict[str, Any] = {"contractVersion": "1", "operation": "csi", "input": {"analysis": analysis}}
     if output_options is not None:
         req["outputOptions"] = output_options
     resp = run_tool(req)
     assert resp["ok"] is True, resp
     assert validate_response_v1(resp) == []
     return resp["result"]["csi"]
+
+
+def _csi_op_error(analysis: dict[str, Any], output_options: dict[str, Any] | None = None) -> dict[str, Any]:
+    req: dict[str, Any] = {"contractVersion": "1", "operation": "csi", "input": {"analysis": analysis}}
+    if output_options is not None:
+        req["outputOptions"] = output_options
+    resp = run_tool(req)
+    assert resp["ok"] is False, resp
+    assert "result" not in resp
+    assert validate_response_v1(resp) == []
+    assert resp["error"]["code"] == "INVALID_REQUEST"
+    return resp["error"]
+
+
+def test_tool_refuses_a_re_export_under_another_publisher():
+    analysis = {**ANALYSIS, **from_csi(to_csi(ANALYSIS, publisher_uri=BASE))}
+    analysis["metadata"] = {**ANALYSIS["metadata"], "publisherUri": BASE}
+    error = _csi_op_error(analysis, {"csiPublisherUri": "https://pub.example/csi/erp"})
+    assert BASE in error["message"] and "https://pub.example/csi/erp" in error["message"]
+
+
+def test_tool_refuses_a_removed_property_s_id():
+    analysis = {**ANALYSIS, **from_csi(to_csi(ANALYSIS, publisher_uri=BASE))}
+    analysis["metadata"] = {**ANALYSIS["metadata"], "publisherUri": BASE}
+    _remove_customer_email(analysis)
+    assert "propertyIds.email names no property" in _csi_op_error(analysis)["message"]
+
+
+def test_tool_refuses_a_bad_publisher_uri_in_metadata():
+    analysis = copy.deepcopy(ANALYSIS)
+    analysis["metadata"]["publisherUri"] = "not a uri"
+    assert "metadata.publisherUri" in _csi_op_error(analysis)["message"]
+
+
+def test_tool_refuses_conflicting_publishers():
+    other = "https://pub.example/csi/erp"
+    error = _csi_op_error(_with_metadata_publisher(BASE), {"csiPublisherUri": other})
+    assert BASE in error["message"] and other in error["message"]
+
+
+def test_tool_refuses_a_malformed_metadata_publisher_beside_a_valid_option():
+    error = _csi_op_error(_with_metadata_publisher("not a uri"), {"csiPublisherUri": BASE})
+    assert error["message"].startswith("metadata.publisherUri must be")
+
+
+def test_tool_accepts_matching_publishers():
+    csi = _csi_op({"csiPublisherUri": BASE}, _with_metadata_publisher(BASE))
+    assert csi == to_csi(ANALYSIS, publisher_uri=BASE)
 
 
 def test_tool_without_publisher_is_unchanged():

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arangodb.com/schema-analyzer/csi/v1/csi.schema.json",
   "title": "Conceptual Schema Interchange (CSI) v1",
-  "description": "Direction-agnostic interchange document for a conceptual model + its ArangoDB physical mapping. Produced by arango-schema-analyzer (reverse) or a forward relational->graph tool (e.g. R2G). The three core blocks are the stable contract; detection enrichments ride along as optional additive fields (additionalProperties: true) and are never required of a consumer. Exception: an entity property mapping is strict (see $defs/PropertyMapping), because an ignored location key is how a reader answers from the wrong field. Version 1.1 adds `path` for a value inside a nested object; a document declares \"1.1\" only when it uses `path`. Version 1.2 adds `multiValued` for an attribute that holds a list, one value per element; a document declares \"1.2\" only when it uses `multiValued`. Additive on every version (issue #42): `physicalMapping` as an equal alias of `arangoPhysicalMapping`, relational `relation`/`columns` on an entity mapping, and publisher-minted mapping ids (`id`, `propertyIds`, `reference.id`) under `provenance.publisher.uri`.",
+  "description": "Direction-agnostic interchange document for a conceptual model + its ArangoDB physical mapping. Produced by arango-schema-analyzer (reverse) or a forward relational->graph tool (e.g. R2G). The three core blocks are the stable contract; detection enrichments ride along as optional additive fields (additionalProperties: true) and are never required of a consumer. Exception: an entity property mapping is strict (see $defs/PropertyMapping), because an ignored location key is how a reader answers from the wrong field. Version 1.1 adds `path` for a value inside a nested object; a document declares \"1.1\" only when it uses `path`. Version 1.2 adds `multiValued` for an attribute that holds a list, one value per element; a document declares \"1.2\" only when it uses `multiValued`. Additive on every version (issue #42): `physicalMapping` as an equal alias of `arangoPhysicalMapping`, relational `relation`/`columns` on an entity or relationship mapping, and publisher-minted mapping ids (`id`, `propertyIds`, `reference.id`) under `provenance.publisher.uri`.",
   "type": "object",
   "additionalProperties": true,
   "required": ["csiVersion", "conceptualModel", "arangoPhysicalMapping", "provenance"],
@@ -134,7 +134,9 @@
               "typeField": { "type": "string" },
               "typeValue": { "type": "string" },
               "id": { "$ref": "#/$defs/MappingId" },
-              "propertyIds": { "$ref": "#/$defs/PropertyIds" }
+              "propertyIds": { "$ref": "#/$defs/PropertyIds" },
+              "relation": { "$ref": "#/$defs/RelationalSource" },
+              "columns": { "type": "array", "items": { "$ref": "#/$defs/RelationalColumn" } }
             }
           }
         }
@@ -197,7 +199,7 @@
       "additionalProperties": { "$ref": "#/$defs/MappingId" }
     },
     "RelationalSource": {
-      "description": "The relational table or view an entity is read from.",
+      "description": "The relational table or view an entity, or a join-table-backed relationship, is read from.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "name"],
