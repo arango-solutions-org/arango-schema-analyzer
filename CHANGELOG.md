@@ -47,6 +47,22 @@ analysis already uses a key now reserved for mapping ids (see below).
   (`docs/tool-contract/v1/README.md`, `docs/PRD.md`).
 - The 0.20.0 CSI schema is a test fixture, so the old-reader compatibility test runs in
   CI, which checks out without tags.
+- **`screen_field_values` can withhold document keys.** The screen is now also asked
+  about `_key`, with each collection's sampled keys. When it picks a collection's keys,
+  each of that collection's documents gets a `<redacted-key>:N` token wherever it is
+  referenced: its `_key`, its `_id`, and any edge's `_from` / `_to`. The `collection/`
+  prefix stays, and one document keeps one token, so the model still sees which edge
+  connects which documents. A key built from personal data
+  (`persons/ann.lee@example.com`) no longer reaches the model when the screen picks it.
+  A screen that picks every field it does not recognise will now pick `_key` too.
+
+### Fixed
+- **Setting `mask_field_values` and `screen_field_values` together no longer skips the
+  screen.** `mask_field_values` masks value counts but leaves sample documents as they
+  are, and with both set the screen was not run, so a field it would have picked went out
+  in the sample documents unmasked. The screen now runs either way. The value counts keep
+  `mask_field_values`' tokens, and the screen withholds its fields and keys in the
+  sample documents.
 
 ## 0.20.0 — 2026-11-16
 

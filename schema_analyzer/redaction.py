@@ -47,11 +47,16 @@ Four independent, composable modes are supported:
   ``<redacted>:N`` tokens, also in ``by_type`` keys and edge endpoints), and its
   values in sample documents replaced by ``<redacted>``. A nested object or a
   list is offered under its top-level field, with every string and number inside
-  it, and picking it withholds the whole value. Every other value goes
-  out unchanged, so a caller can withhold personal data and still let the model
-  see type values like ``"Person"``. Library-only: a function cannot come from a
-  request, so ``from_dict`` never sets it. Ignored when ``mask_field_values``
-  already masks everything.
+  it, and picking it withholds the whole value. ``_key`` is offered too, with the
+  collection's sampled keys: picking it replaces the key of each of that
+  collection's documents with a ``<redacted-key>:N`` token wherever the document is
+  referenced (``_key``, ``_id``, and any edge's ``_from`` / ``_to``), keeping the
+  ``collection/`` prefix so the model still sees what connects to what. Every other
+  value goes out unchanged, so a caller can withhold personal data and still let the
+  model see type values like ``"Person"``. Library-only: a function cannot come from
+  a request, so ``from_dict`` never sets it. With ``mask_field_values`` also set, that
+  mode's tokens mask the value counts, and the screen still withholds the picked
+  fields and keys in sample documents (which ``mask_field_values`` leaves as they are).
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ from dataclasses import dataclass
 from typing import Any
 
 REDACTED_VALUE_TOKEN = "<redacted>"
+REDACTED_KEY_TOKEN = "<redacted-key>"
 FIELD_NAME_TOKEN_PREFIX = "redacted_field_"
 
 _SAMPLE_KEYS = ("sample_documents", "sample_edges")
@@ -70,6 +76,11 @@ _SAMPLE_KEYS = ("sample_documents", "sample_edges")
 # ArangoDB system / structural fields that are not sensitive user data and must
 # stay intact so the LLM (and downstream reconciliation) can reason about edges.
 _SYSTEM_FIELD_NAMES = frozenset({"_key", "_id", "_rev", "_from", "_to"})
+
+# A key can hold personal data (``persons/ann.lee@example.com``), so the screen is asked
+# about ``_key``; the fields that reference a document by id follow its answer.
+_UNSCREENED_SYSTEM_FIELDS = _SYSTEM_FIELD_NAMES - {"_key"}
+_DOCUMENT_ID_FIELDS = ("_id", "_from", "_to")
 
 _FIELD_TOKEN_RE = re.compile(re.escape(FIELD_NAME_TOKEN_PREFIX) + r"\d+")
 
@@ -174,7 +185,7 @@ def _scalar_leaves(value: Any) -> list[str]:
 
 
 def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
-    """Every sampled value of each non-system field in one collection entry.
+    """Every sampled value of each non-system field, and of ``_key``, in one collection entry.
 
     A nested object or list counts as one top-level field holding every value inside it.
     """
@@ -191,7 +202,7 @@ def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
         for doc in entry.get(sk) or []:
             if isinstance(doc, dict):
                 for field, value in doc.items():
-                    leaves = [] if field in _SYSTEM_FIELD_NAMES else _scalar_leaves(value)
+                    leaves = [] if field in _UNSCREENED_SYSTEM_FIELDS else _scalar_leaves(value)
                     if leaves:
                         by_field.setdefault(field, []).extend(leaves)
     return by_field
@@ -227,21 +238,65 @@ def _screened_value_tokens(collections: list[Any], picked: dict[int, set[str]]) 
     return {v: f"{REDACTED_VALUE_TOKEN}:{i}" for i, v in enumerate(sorted(values))}
 
 
-def _mask_screened_fields(entry: dict[str, Any], fields: set[str], token_map: dict[str, str]) -> None:
+def _mask_screened_counts(entry: dict[str, Any], fields: set[str], token_map: dict[str, str]) -> None:
     for svc_key in _VALUE_COUNT_KEYS:
         svc = entry.get(svc_key)
         if isinstance(svc, dict):
             screened = _mask_value_counts({f: v for f, v in svc.items() if f in fields}, token_map)
             entry[svc_key] = {f: screened.get(f, v) for f, v in svc.items()}
+
+
+def _mask_screened_samples(entry: dict[str, Any], fields: set[str]) -> None:
+    # ``_key`` is left to _mask_document_keys, which keeps it consistent with the ids.
     for sk in _SAMPLE_KEYS:
         docs = entry.get(sk)
         if isinstance(docs, list):
             entry[sk] = [
-                {k: (REDACTED_VALUE_TOKEN if k in fields else v) for k, v in doc.items()}
+                {k: (REDACTED_VALUE_TOKEN if k in fields and k != "_key" else v) for k, v in doc.items()}
                 if isinstance(doc, dict)
                 else doc
                 for doc in docs
             ]
+
+
+def _document_key_tokens(collections: list[Any], keyed: set[str]) -> dict[str, str]:
+    """Document id → key token for every sampled reference to a document of a ``keyed`` collection."""
+    ids: set[str] = set()
+    for entry in collections:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "")
+        for sk in _SAMPLE_KEYS:
+            for doc in entry.get(sk) or []:
+                if not isinstance(doc, dict):
+                    continue
+                if name in keyed and isinstance(doc.get("_key"), (str, int)):
+                    ids.add(f"{name}/{doc['_key']}")
+                for field in _DOCUMENT_ID_FIELDS:
+                    ref = doc.get(field)
+                    if isinstance(ref, str) and ref.partition("/")[0] in keyed:
+                        ids.add(ref)
+    return {doc_id: f"{REDACTED_KEY_TOKEN}:{i}" for i, doc_id in enumerate(sorted(ids))}
+
+
+def _mask_document_keys(entry: dict[str, Any], keyed: set[str], id_tokens: dict[str, str]) -> None:
+    name = str(entry.get("name") or "")
+    for sk in _SAMPLE_KEYS:
+        docs = entry.get(sk)
+        if not isinstance(docs, list):
+            continue
+        masked: list[Any] = []
+        for doc in docs:
+            if isinstance(doc, dict):
+                doc = dict(doc)
+                if name in keyed and "_key" in doc:
+                    doc["_key"] = id_tokens.get(f"{name}/{doc['_key']}", REDACTED_KEY_TOKEN)
+                for field in _DOCUMENT_ID_FIELDS:
+                    ref = doc.get(field)
+                    if isinstance(ref, str) and ref in id_tokens:
+                        doc[field] = f"{ref.partition('/')[0]}/{id_tokens[ref]}"
+            masked.append(doc)
+        entry[sk] = masked
 
 
 def _mask_value_counts(value_counts: dict[str, Any], token_map: dict[str, str]) -> dict[str, Any]:
@@ -487,13 +542,14 @@ def redact_snapshot_for_egress(
         return redacted
 
     screened: dict[int, set[str]] = {}
+    if options.screen_field_values is not None:
+        screened = _screened_fields(collections, options.screen_field_values)
     if options.mask_field_values:
         token_map = _collect_sensitive_values(collections)
-    elif options.screen_field_values is not None:
-        screened = _screened_fields(collections, options.screen_field_values)
-        token_map = _screened_value_tokens(collections, screened)
     else:
-        token_map = {}
+        token_map = _screened_value_tokens(collections, screened)
+    keyed = {str(collections[i].get("name") or "") for i, fields in screened.items() if "_key" in fields}
+    id_tokens = _document_key_tokens(collections, keyed) if keyed else {}
     name_map: dict[str, str] = {}
     if options.mask_field_names:
         name_map = field_name_map if field_name_map is not None else build_field_name_map(collections)
@@ -510,7 +566,11 @@ def redact_snapshot_for_egress(
                 if isinstance(svc, dict):
                     entry[svc_key] = _mask_value_counts(svc, token_map)
         elif i in screened:
-            _mask_screened_fields(entry, screened[i], token_map)
+            _mask_screened_counts(entry, screened[i], token_map)
+        if i in screened:
+            _mask_screened_samples(entry, screened[i])
+        if id_tokens:
+            _mask_document_keys(entry, keyed, id_tokens)
         if token_map:
             # A masked value is masked everywhere it appears, in any collection.
             observed = entry.get("observed_fields")

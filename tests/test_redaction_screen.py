@@ -66,6 +66,7 @@ def test_the_screen_sees_collection_field_and_every_sampled_value():
 
     out = redact_snapshot_for_egress(SNAPSHOT, RedactionOptions(screen_field_values=record))
     assert sorted(seen) == [
+        ("customers", "_key", ["1"]),
         ("customers", "kind", ["Gold", "Gold", "Silver"]),
         ("customers", "owner", ["Ann Lee", "Ann Lee", "Bob Ray", "Cy Fox"]),
         ("customers", "status", ["active"]),
@@ -112,6 +113,7 @@ def test_a_nested_object_or_list_is_screened_under_its_top_level_field():
 
     out = redact_snapshot_for_egress(NESTED, RedactionOptions(screen_field_values=personal))
     assert seen == {
+        "_key": ["1"],
         "type": ["Person"],
         "contact": ["+1 555 0100", "ann@home.example"],
         "emails": ["ann@work.example"],
@@ -150,6 +152,78 @@ def test_label_cooccurrence_is_masked_with_the_labels_it_holds():
 
     out = redact_snapshot_for_egress(LABELLED, RedactionOptions(mask_field_names=True))
     assert list(out["collections"][0]["label_cooccurrence"]) == ["redacted_field_0"]
+
+
+KEYED = {
+    "collections": [
+        {
+            "name": "people",
+            "type": "document",
+            "sample_documents": [
+                {"_key": "ann.lee@example.com", "_id": "people/ann.lee@example.com", "_rev": "r1", "name": "Ann"},
+                {"_key": "bo.ray@example.com", "_id": "people/bo.ray@example.com", "_rev": "r2", "name": "Bo"},
+            ],
+        },
+        {
+            "name": "companies",
+            "type": "document",
+            "sample_documents": [{"_key": "acme", "_id": "companies/acme", "name": "Acme"}],
+        },
+        {
+            "name": "works_at",
+            "type": "edge",
+            "sample_edges": [
+                {"_key": "7", "_id": "works_at/7", "_from": "people/ann.lee@example.com", "_to": "companies/acme"},
+                {"_key": "8", "_id": "works_at/8", "_from": "people/cy.fox@example.com", "_to": "companies/acme"},
+            ],
+        },
+    ],
+}
+
+
+def _people_keys(collection: str, field: str, values: list[str]) -> bool:
+    return field == "_key" and any("@" in v for v in values)
+
+
+def test_a_screened_key_is_tokenized_wherever_the_document_is_referenced():
+    out = redact_snapshot_for_egress(KEYED, RedactionOptions(screen_field_values=_people_keys))
+    people, companies, works_at = (c.get("sample_documents") or c["sample_edges"] for c in out["collections"])
+    # One token per document, sorted by id: ann, bo, then cy (seen only on an edge).
+    assert people == [
+        {"_key": "<redacted-key>:0", "_id": "people/<redacted-key>:0", "_rev": "r1", "name": "Ann"},
+        {"_key": "<redacted-key>:1", "_id": "people/<redacted-key>:1", "_rev": "r2", "name": "Bo"},
+    ]
+    assert works_at == [
+        {"_key": "7", "_id": "works_at/7", "_from": "people/<redacted-key>:0", "_to": "companies/acme"},
+        {"_key": "8", "_id": "works_at/8", "_from": "people/<redacted-key>:2", "_to": "companies/acme"},
+    ]
+    assert companies == KEYED["collections"][1]["sample_documents"]
+    assert "@example.com" not in json.dumps(out)
+    assert KEYED["collections"][0]["sample_documents"][0]["_key"] == "ann.lee@example.com"
+
+
+def test_a_key_the_screen_does_not_pick_is_unchanged():
+    out = redact_snapshot_for_egress(KEYED, RedactionOptions(screen_field_values=lambda c, f, v: False))
+    assert json.dumps(out, sort_keys=True) == json.dumps(KEYED, sort_keys=True)
+
+
+def test_with_mask_field_values_the_screen_still_withholds_sample_values_and_keys():
+    def owner_and_keys(collection: str, field: str, values: list[str]) -> bool:
+        return field in ("owner", "_key")
+
+    out = redact_snapshot_for_egress(
+        SNAPSHOT, RedactionOptions(mask_field_values=True, screen_field_values=owner_and_keys)
+    )
+    coll = out["collections"][0]
+    assert coll["sample_documents"][0] == {
+        "_key": "<redacted-key>:0",
+        "kind": "Gold",
+        "owner": "<redacted>",
+        "status": "active",
+    }
+    # The value counts keep mask_field_values' tokens, every field masked.
+    assert [c["value"] for c in coll["sample_field_value_counts"]["kind"]] == ["<redacted>:3", "<redacted>:4"]
+    assert "Ann Lee" not in json.dumps(out)
 
 
 def test_composes_with_field_name_masking():
