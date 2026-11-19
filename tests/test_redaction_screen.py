@@ -188,7 +188,7 @@ def _people_keys(collection: str, field: str, values: list[str]) -> bool:
 def test_a_screened_key_is_tokenized_wherever_the_document_is_referenced():
     out = redact_snapshot_for_egress(KEYED, RedactionOptions(screen_field_values=_people_keys))
     people, companies, works_at = (c.get("sample_documents") or c["sample_edges"] for c in out["collections"])
-    # One token per document, sorted by id: ann, bo, then cy (seen only on an edge).
+    # One token per document, in the order first seen: ann, bo, then cy (seen only on an edge).
     assert people == [
         {"_key": "<redacted-key>:0", "_id": "people/<redacted-key>:0", "_rev": "r1", "name": "Ann"},
         {"_key": "<redacted-key>:1", "_id": "people/<redacted-key>:1", "_rev": "r2", "name": "Bo"},
@@ -200,6 +200,76 @@ def test_a_screened_key_is_tokenized_wherever_the_document_is_referenced():
     assert companies == KEYED["collections"][1]["sample_documents"]
     assert "@example.com" not in json.dumps(out)
     assert KEYED["collections"][0]["sample_documents"][0]["_key"] == "ann.lee@example.com"
+
+
+def test_an_id_held_in_an_ordinary_field_gets_the_same_token():
+    snapshot = json.loads(json.dumps(KEYED))
+    snapshot["collections"].append(
+        {
+            "name": "orders",
+            "type": "document",
+            "sample_documents": [
+                {
+                    "_key": "o1",
+                    "personId": "people/ann.lee@example.com",
+                    "watchers": ["people/bo.ray@example.com", "teams/x", "people/dee.lin@example.com"],
+                    "note": {"by": "people/ann.lee@example.com"},
+                    "customerKey": "ann.lee@example.com",
+                }
+            ],
+        }
+    )
+    out = redact_snapshot_for_egress(snapshot, RedactionOptions(screen_field_values=_people_keys))
+    (order,) = out["collections"][3]["sample_documents"]
+    assert order["personId"] == "people/<redacted-key>:0"
+    # dee is referenced only here, and is tokenized all the same; teams is no collection.
+    assert order["watchers"] == ["people/<redacted-key>:1", "teams/x", "people/<redacted-key>:3"]
+    assert order["note"] == {"by": "people/<redacted-key>:0"}
+    # A bare key can't be told from an ordinary value: it is the screen's to pick by field.
+    assert order["customerKey"] == "ann.lee@example.com"
+
+    def keys_and_emails(collection: str, field: str, values: list[str]) -> bool:
+        return any("@" in v for v in values)
+
+    out = redact_snapshot_for_egress(snapshot, RedactionOptions(screen_field_values=keys_and_emails))
+    assert "@example.com" not in json.dumps(out)
+
+
+def test_keys_seen_only_on_edges_are_offered_and_tokenized():
+    snapshot = {
+        "collections": [
+            {
+                "name": "knows",
+                "type": "edge",
+                "sample_edges": [
+                    {"_key": "1", "_id": "knows/1", "_from": "people/ann@x.example", "_to": "people/bo@x.example"},
+                ],
+            },
+            {"name": "people", "type": "document", "sample_error": "timeout"},
+        ]
+    }
+    seen: dict[str, list[str]] = {}
+
+    def record(collection: str, field: str, values: list[str]) -> bool:
+        seen[collection] = values
+        return field == "_key" and any("@" in v for v in values)
+
+    out = redact_snapshot_for_egress(snapshot, RedactionOptions(screen_field_values=record))
+    assert seen == {"knows": ["1"], "people": ["ann@x.example", "bo@x.example"]}
+    (edge,) = out["collections"][0]["sample_edges"]
+    assert edge == {
+        "_key": "1",
+        "_id": "knows/1",
+        "_from": "people/<redacted-key>:0",
+        "_to": "people/<redacted-key>:1",
+    }
+
+
+def test_key_tokens_follow_the_order_first_seen_not_the_keys():
+    snapshot = {"collections": [{"name": "p", "sample_documents": [{"_key": k} for k in ("zed@x", "amy@x", "mia@x")]}]}
+    out = redact_snapshot_for_egress(snapshot, RedactionOptions(screen_field_values=_people_keys))
+    keys = [d["_key"] for d in out["collections"][0]["sample_documents"]]
+    assert keys == ["<redacted-key>:0", "<redacted-key>:1", "<redacted-key>:2"]
 
 
 def test_a_key_the_screen_does_not_pick_is_unchanged():

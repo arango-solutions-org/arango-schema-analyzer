@@ -47,11 +47,18 @@ Four independent, composable modes are supported:
   ``<redacted>:N`` tokens, also in ``by_type`` keys and edge endpoints), and its
   values in sample documents replaced by ``<redacted>``. A nested object or a
   list is offered under its top-level field, with every string and number inside
-  it, and picking it withholds the whole value. ``_key`` is offered too, with the
-  collection's sampled keys: picking it replaces the key of each of that
-  collection's documents with a ``<redacted-key>:N`` token wherever the document is
-  referenced (``_key``, ``_id``, and any edge's ``_from`` / ``_to``), keeping the
-  ``collection/`` prefix so the model still sees what connects to what. Every other
+  it, and picking it withholds the whole value. The screen is also asked about each
+  collection's ``_key``, with every key of it the samples show: its documents' own
+  keys and the key part of any sampled ``_id`` / ``_from`` / ``_to``, or of any other
+  sampled ``<collection>/<key>`` string, pointing into it, so a collection that is
+  only referenced is asked about too. Picking it gives
+  each of those documents a ``<redacted-key>:N`` token (numbered in the order first
+  seen) as its ``_key``, and in place of every string in a sample document that is
+  exactly its id (``_id``, ``_from`` / ``_to``, or an ordinary reference field such
+  as ``personId``), keeping the ``collection/`` prefix so the model still sees what
+  connects to what. A bare key in an ordinary field (``customerKey``) cannot be told
+  from an ordinary value, so it is left to the screen, which is asked about that
+  field with those values; a picked field is withheld whole. Every other
   value goes out unchanged, so a caller can withhold personal data and still let the
   model see type values like ``"Person"``. Library-only: a function cannot come from
   a request, so ``from_dict`` never sets it. With ``mask_field_values`` also set, that
@@ -78,8 +85,7 @@ _SAMPLE_KEYS = ("sample_documents", "sample_edges")
 _SYSTEM_FIELD_NAMES = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 
 # A key can hold personal data (``persons/ann.lee@example.com``), so the screen is asked
-# about ``_key``; the fields that reference a document by id follow its answer.
-_UNSCREENED_SYSTEM_FIELDS = _SYSTEM_FIELD_NAMES - {"_key"}
+# about each collection's keys, gathered from these fields across all samples.
 _DOCUMENT_ID_FIELDS = ("_id", "_from", "_to")
 
 _FIELD_TOKEN_RE = re.compile(re.escape(FIELD_NAME_TOKEN_PREFIX) + r"\d+")
@@ -185,7 +191,7 @@ def _scalar_leaves(value: Any) -> list[str]:
 
 
 def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
-    """Every sampled value of each non-system field, and of ``_key``, in one collection entry.
+    """Every sampled value of each non-system field in one collection entry.
 
     A nested object or list counts as one top-level field holding every value inside it.
     """
@@ -202,7 +208,7 @@ def _sampled_values_by_field(entry: dict[str, Any]) -> dict[str, list[str]]:
         for doc in entry.get(sk) or []:
             if isinstance(doc, dict):
                 for field, value in doc.items():
-                    leaves = [] if field in _UNSCREENED_SYSTEM_FIELDS else _scalar_leaves(value)
+                    leaves = [] if field in _SYSTEM_FIELD_NAMES else _scalar_leaves(value)
                     if leaves:
                         by_field.setdefault(field, []).extend(leaves)
     return by_field
@@ -247,36 +253,83 @@ def _mask_screened_counts(entry: dict[str, Any], fields: set[str], token_map: di
 
 
 def _mask_screened_samples(entry: dict[str, Any], fields: set[str]) -> None:
-    # ``_key`` is left to _mask_document_keys, which keeps it consistent with the ids.
     for sk in _SAMPLE_KEYS:
         docs = entry.get(sk)
         if isinstance(docs, list):
             entry[sk] = [
-                {k: (REDACTED_VALUE_TOKEN if k in fields and k != "_key" else v) for k, v in doc.items()}
+                {k: (REDACTED_VALUE_TOKEN if k in fields else v) for k, v in doc.items()}
                 if isinstance(doc, dict)
                 else doc
                 for doc in docs
             ]
 
 
+def _sampled_document_keys(collections: list[Any]) -> dict[str, list[str]]:
+    """Each collection's document keys as the samples show them, in the order first seen.
+
+    A key counts whether it is a sampled document's own ``_key``, the key part of a
+    sampled ``_id`` / ``_from`` / ``_to`` pointing into the collection (so a collection
+    seen only as an edge endpoint is listed too), or the key part of any other sampled
+    string ``<collection>/<key>`` naming a collection the snapshot knows: an id held in
+    an ordinary reference field.
+    """
+    docs = [
+        (str(entry.get("name") or ""), doc)
+        for entry in collections
+        if isinstance(entry, dict)
+        for sk in _SAMPLE_KEYS
+        for doc in entry.get(sk) or []
+        if isinstance(doc, dict)
+    ]
+    keys: dict[str, dict[str, None]] = {}
+    for name, doc in docs:
+        if name and isinstance(doc.get("_key"), (str, int)):
+            keys.setdefault(name, {})[str(doc["_key"])] = None
+        for field in _DOCUMENT_ID_FIELDS:
+            ref = doc.get(field)
+            if isinstance(ref, str) and "/" in ref:
+                collection, _, key = ref.partition("/")
+                keys.setdefault(collection, {})[key] = None
+    known = set(keys) | {str(e.get("name") or "") for e in collections if isinstance(e, dict)}
+    for _, doc in docs:
+        for field, value in doc.items():
+            if field in _SYSTEM_FIELD_NAMES:
+                continue
+            for leaf in _scalar_leaves(value):
+                collection, slash, key = leaf.partition("/")
+                if slash and key and "/" not in key and collection in known:
+                    keys.setdefault(collection, {})[key] = None
+    return {collection: list(seen) for collection, seen in keys.items()}
+
+
+def _screened_key_collections(collections: list[Any], screen: FieldValueScreen) -> set[str]:
+    """The collections whose ``_key`` the screen withholds."""
+    return {c for c, keys in _sampled_document_keys(collections).items() if screen(c, "_key", keys)}
+
+
 def _document_key_tokens(collections: list[Any], keyed: set[str]) -> dict[str, str]:
-    """Document id → key token for every sampled reference to a document of a ``keyed`` collection."""
-    ids: set[str] = set()
-    for entry in collections:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or "")
-        for sk in _SAMPLE_KEYS:
-            for doc in entry.get(sk) or []:
-                if not isinstance(doc, dict):
-                    continue
-                if name in keyed and isinstance(doc.get("_key"), (str, int)):
-                    ids.add(f"{name}/{doc['_key']}")
-                for field in _DOCUMENT_ID_FIELDS:
-                    ref = doc.get(field)
-                    if isinstance(ref, str) and ref.partition("/")[0] in keyed:
-                        ids.add(ref)
-    return {doc_id: f"{REDACTED_KEY_TOKEN}:{i}" for i, doc_id in enumerate(sorted(ids))}
+    """Document id → key token for every sampled document of a ``keyed`` collection.
+
+    Numbered in the order first seen, so a token says nothing about the key it hides.
+    """
+    tokens: dict[str, str] = {}
+    for collection, keys in _sampled_document_keys(collections).items():
+        if collection in keyed:
+            for key in keys:
+                tokens[f"{collection}/{key}"] = f"{REDACTED_KEY_TOKEN}:{len(tokens)}"
+    return tokens
+
+
+def _tokenize_ids(value: Any, id_tokens: dict[str, str]) -> Any:
+    """``value`` with every string that is exactly a tokenized document id replaced, at any depth."""
+    if isinstance(value, str):
+        token = id_tokens.get(value)
+        return f"{value.partition('/')[0]}/{token}" if token else value
+    if isinstance(value, list):
+        return [_tokenize_ids(v, id_tokens) for v in value]
+    if isinstance(value, dict):
+        return {k: _tokenize_ids(v, id_tokens) for k, v in value.items()}
+    return value
 
 
 def _mask_document_keys(entry: dict[str, Any], keyed: set[str], id_tokens: dict[str, str]) -> None:
@@ -288,13 +341,9 @@ def _mask_document_keys(entry: dict[str, Any], keyed: set[str], id_tokens: dict[
         masked: list[Any] = []
         for doc in docs:
             if isinstance(doc, dict):
-                doc = dict(doc)
+                doc = {k: (v if k == "_key" else _tokenize_ids(v, id_tokens)) for k, v in doc.items()}
                 if name in keyed and "_key" in doc:
                     doc["_key"] = id_tokens.get(f"{name}/{doc['_key']}", REDACTED_KEY_TOKEN)
-                for field in _DOCUMENT_ID_FIELDS:
-                    ref = doc.get(field)
-                    if isinstance(ref, str) and ref in id_tokens:
-                        doc[field] = f"{ref.partition('/')[0]}/{id_tokens[ref]}"
             masked.append(doc)
         entry[sk] = masked
 
@@ -548,7 +597,9 @@ def redact_snapshot_for_egress(
         token_map = _collect_sensitive_values(collections)
     else:
         token_map = _screened_value_tokens(collections, screened)
-    keyed = {str(collections[i].get("name") or "") for i, fields in screened.items() if "_key" in fields}
+    keyed: set[str] = set()
+    if options.screen_field_values is not None:
+        keyed = _screened_key_collections(collections, options.screen_field_values)
     id_tokens = _document_key_tokens(collections, keyed) if keyed else {}
     name_map: dict[str, str] = {}
     if options.mask_field_names:

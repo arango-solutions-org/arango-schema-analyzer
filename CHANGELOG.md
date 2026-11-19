@@ -48,13 +48,20 @@ analysis already uses a key now reserved for mapping ids (see below).
 - The 0.20.0 CSI schema is a test fixture, so the old-reader compatibility test runs in
   CI, which checks out without tags.
 - **`screen_field_values` can withhold document keys.** The screen is now also asked
-  about `_key`, with each collection's sampled keys. When it picks a collection's keys,
-  each of that collection's documents gets a `<redacted-key>:N` token wherever it is
-  referenced: its `_key`, its `_id`, and any edge's `_from` / `_to`. The `collection/`
-  prefix stays, and one document keeps one token, so the model still sees which edge
-  connects which documents. A key built from personal data
-  (`persons/ann.lee@example.com`) no longer reaches the model when the screen picks it.
-  A screen that picks every field it does not recognise will now pick `_key` too.
+  about each collection's `_key`, with every key of it the samples show: its documents'
+  own keys and the key part of any sampled `_id`, `_from` or `_to`, or of any other
+  sampled `<collection>/<key>` string naming a collection in the snapshot, pointing into
+  it, so a collection seen only on edges or in reference fields is asked about too. When it picks a collection's keys,
+  each of those documents gets a `<redacted-key>:N` token (numbered in the order first
+  seen, so it says nothing about the key) as its `_key`, and in place of every string in
+  a sample document that is exactly its id: `_id`, an edge's `_from` / `_to`, or an
+  ordinary reference field such as `personId`, also inside lists and nested objects. The
+  `collection/` prefix stays, and one document keeps one token, so the model still sees
+  what connects to what. A key built from personal data (`persons/ann.lee@example.com`)
+  no longer reaches the model when the screen picks it. A bare key in an ordinary field
+  (`customerKey: "ann.lee@example.com"`) can't be told from an ordinary value, so it is
+  left to the screen, which is asked about that field with those values. A screen that
+  picks every field it does not recognise will now pick `_key` too.
 
 ### Fixed
 - **Setting `mask_field_values` and `screen_field_values` together no longer skips the
