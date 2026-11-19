@@ -205,7 +205,8 @@ Exports (see `schema_analyzer/__init__.py`):
   `maskFieldNames` tokenizes field names and round-trips them back to real names
   in the output (`build_field_name_map` / `unmask_field_names`);
   `screen_field_values` (Python only) masks just the fields a caller's
-  `(collection, field, values) -> bool` function picks, e.g. personal data
+  `(collection, field, values) -> bool` function picks, e.g. personal data,
+  including document keys (`_key`, tokenized wherever the document is referenced)
 
 ## Recent additions
 
