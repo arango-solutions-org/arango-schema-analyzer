@@ -146,7 +146,7 @@ def test_a_join_table_relationship_can_name_its_table():
 
 
 @pytest.mark.parametrize("relation, columns", [({"kind": "sequence", "nonsense": 1}, None), (None, "not-a-list")])
-def test_arthur_s_relationship_examples_are_refused(relation, columns):
+def test_malformed_relational_details_on_a_relationship_are_refused(relation, columns):
     csi = to_csi(ANALYSIS)
     spec = csi["arangoPhysicalMapping"]["relationships"]["placed"]
     if relation is not None:
@@ -267,7 +267,7 @@ def _remove_customer_email(analysis: dict[str, Any]) -> None:
 
 
 def test_a_removed_property_s_id_is_refused_not_dropped():
-    """Arthur's case 2: a published property is removed but its propertyIds entry stays."""
+    """A published property is removed but its propertyIds entry stays: refused, not dropped."""
     analysis = from_csi(to_csi(ANALYSIS, publisher_uri=BASE))
     _remove_customer_email(analysis)
     with pytest.raises(SchemaAnalyzerError) as exc:
@@ -319,7 +319,7 @@ def test_bad_publisher_uri_in_metadata_is_refused(bad):
 
 
 def test_a_re_export_under_another_publisher_is_refused():
-    """Arthur's case 1: carried ids are never re-minted; the caller is told both publishers."""
+    """Carried ids are never re-minted under another publisher; the caller is told both publishers."""
     other = "https://pub.example/csi/erp"
     analysis = from_csi(to_csi(ANALYSIS, publisher_uri=BASE))
     before = copy.deepcopy(analysis)
@@ -526,6 +526,8 @@ def test_tool_refuses_a_re_export_under_another_publisher():
     analysis["metadata"] = {**ANALYSIS["metadata"], "publisherUri": BASE}
     error = _csi_op_error(analysis, {"csiPublisherUri": "https://pub.example/csi/erp"})
     assert BASE in error["message"] and "https://pub.example/csi/erp" in error["message"]
+    assert "outputOptions.csiPublisherUri" in error["message"]
+    assert "publisher_uri" not in error["message"]
 
 
 def test_tool_refuses_a_removed_property_s_id():
@@ -545,6 +547,8 @@ def test_tool_refuses_conflicting_publishers():
     other = "https://pub.example/csi/erp"
     error = _csi_op_error(_with_metadata_publisher(BASE), {"csiPublisherUri": other})
     assert BASE in error["message"] and other in error["message"]
+    assert "outputOptions.csiPublisherUri" in error["message"]
+    assert "publisher_uri" not in error["message"]
 
 
 def test_tool_refuses_a_malformed_metadata_publisher_beside_a_valid_option():

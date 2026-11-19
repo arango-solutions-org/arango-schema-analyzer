@@ -48,8 +48,14 @@ The tool is designed to be callable via:
   analysis are kept, never re-minted. The request fails with `INVALID_REQUEST`,
   naming the field or the offending ids, when the publisher URI is malformed, when
   `csiPublisherUri` and `metadata.publisherUri` differ, when carried ids belong to
-  a different publisher, or when a `propertyIds` entry names
-  a property that no longer exists
+  a different publisher, when a `propertyIds` entry names
+  a property that no longer exists, or when the analysis uses a reserved key
+  otherwise: `id` and `propertyIds` on a mapping entry, and `id` on a foreign-key
+  `reference`, are reserved for mapping ids. An id is stable across a `from_csi`
+  round trip, and not across a fresh analysis that renames an entity or property
+  (carrying ids across a rename is issue #52). To move a document to a new
+  publisher on purpose, remove its mapping ids and `metadata.publisherUri`, then
+  supply the new `csiPublisherUri`
 
 ## Request / Response
 

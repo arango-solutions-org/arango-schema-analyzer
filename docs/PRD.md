@@ -639,19 +639,24 @@ and every lifted foreign-key `reference` an `id`. A conceptual relationship with
 a physical mapping nor a `reference` is not a mapping entry and gets no id. The URI is
 an absolute http(s) URI without query or fragment, and is the namespace of **one**
 published CSI document: the publisher gives each document its own, so no two documents
-share an id. Ids are minted from names only when missing; an id already present is never
-replaced, so an id read back with `from_csi` survives a rename, while a fresh analysis
-that renames something mints a new id. There is no id registry. **Alias:** with a
+share an id. Ids are minted from conceptual names only when missing; an id already present
+is never replaced. An id is stable across a `from_csi` round trip, and not across a fresh
+analysis that renames an entity or property; carrying ids forward across a rename is #52.
+There is no id registry. A relationship with no mapping entry getting an id is #53.
+`id` and `propertyIds` on a mapping entry, and `id` on a foreign-key `reference`, are
+reserved for mapping ids; `to_csi` refuses an analysis that uses them otherwise. **Alias:** with a
 publisher URI, `to_csi` also writes `physicalMapping`, equal to `arangoPhysicalMapping`,
 which stays required for v1 readers; without one the output is byte-identical to earlier
-releases. **Refusals:** `validate_csi` requires, once any id is present, a publisher,
+releases, except that an analysis using the reserved keys above is refused. **Refusals:** `validate_csi` requires, once any id is present, a publisher,
 complete coverage, ids under the publisher, no duplicates, `propertyIds` keys equal to
 `properties` keys and equal alias copies. `to_csi` runs the same check before it returns
 and raises `SchemaAnalyzerError` (`INVALID_REQUEST`) rather than write a document that
 fails it: ids carried from another publisher are refused (both URIs named), not
 re-minted, and a `propertyIds` entry whose property was removed is refused, not dropped.
 A malformed publisher URI is refused the same way, naming its field; an explicit URI and
-`metadata.publisherUri` are both checked, and when both are given they must be equal. Producers (RSA,
+`metadata.publisherUri` are both checked, and when both are given they must be equal. To move
+a document to a new publisher on purpose, remove its mapping ids and `metadata.publisherUri`,
+then supply the new URI. Producers (RSA,
 r2g `export-csi`) emit these keys in their own repositories. **Implementation**:
 `csi/v1/csi.schema.json` (`$defs/MappingId`, `PropertyIds`, `RelationalSource`,
 `RelationalColumn`, `physicalMapping`), `csi/__init__.py` (`to_csi`, `_mint_mapping_ids`,

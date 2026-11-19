@@ -169,12 +169,43 @@ def to_csi(
     from another publisher (never re-minted), or a ``propertyIds`` key whose property
     is gone (never dropped silently).
     """
+    return _to_csi(
+        analysis,
+        direction=direction,
+        source=source,
+        producer=producer,
+        producer_version=producer_version,
+        owl_naming=owl_naming,
+        entity_overrides=entity_overrides,
+        property_overrides=property_overrides,
+        publisher_uri=publisher_uri,
+    )
+
+
+def _to_csi(
+    analysis: Any,
+    *,
+    direction: str = "reverse",
+    source: dict[str, Any] | None = None,
+    producer: str = "arango-schema-analyzer",
+    producer_version: str | None = None,
+    owl_naming: bool = True,
+    entity_overrides: dict[str, str] | None = None,
+    property_overrides: dict[str, str] | None = None,
+    publisher_uri: str | None = None,
+    publisher_field: str = "publisher_uri",
+) -> dict[str, Any]:
+    """:func:`to_csi`, naming the publisher URI as ``publisher_field`` in its errors.
+
+    The tool passes ``outputOptions.csiPublisherUri`` so a caller is pointed at the
+    field they set.
+    """
     data = normalize_analysis_dict(analysis)
     conceptual = data.get("conceptualSchema")
     physical = data.get("physicalMapping")
     metadata = data.get("metadata")
     # Both sources are checked, so a malformed or conflicting one is never hidden by the other.
-    supplied = {"publisher_uri": publisher_uri}
+    supplied = {publisher_field: publisher_uri}
     if isinstance(metadata, dict) and metadata.get("publisherUri") is not None:
         supplied["metadata.publisherUri"] = metadata["publisherUri"]
     uris: dict[str, str] = {}
@@ -189,7 +220,7 @@ def to_csi(
         uris[field] = value.rstrip("/")
     if len(set(uris.values())) > 1:
         raise SchemaAnalyzerError(
-            f"publisher_uri {uris['publisher_uri']!r} differs from metadata.publisherUri "
+            f"{publisher_field} {uris[publisher_field]!r} differs from metadata.publisherUri "
             f"{uris['metadata.publisherUri']!r}, under which this analysis's mapping ids were published; "
             "ids are kept, never re-minted under another publisher",
             code="INVALID_REQUEST",

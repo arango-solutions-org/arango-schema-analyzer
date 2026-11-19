@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 from urllib.parse import urlsplit
 
 from .analyzer import AgenticSchemaAnalyzer
-from .csi import to_csi
+from .csi import _to_csi
 from .defaults import (
     ALLOWED_HOSTS_ENV_VAR,
     DEFAULT_CACHE_TTL_SECONDS,
@@ -382,7 +382,13 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
             return _build_response(
                 op=op,
                 req_id=req_id,
-                result={"csi": to_csi(analysis_in, publisher_uri=output_options.get("csiPublisherUri"))},
+                result={
+                    "csi": _to_csi(
+                        analysis_in,
+                        publisher_uri=output_options.get("csiPublisherUri"),
+                        publisher_field="outputOptions.csiPublisherUri",
+                    )
+                },
                 tooling=_tooling_block(analysis=analysis_in, snapshot=None),
             )
 
