@@ -70,6 +70,14 @@ analysis already uses a key now reserved for mapping ids (see below).
   in the sample documents unmasked. The screen now runs either way. The value counts keep
   `mask_field_values`' tokens, and the screen withholds its fields and keys in the
   sample documents.
+- **`metadata.statistics` survives polymorphic relationships.** A relationship whose
+  endpoint is a list of labels (`fromEntity: ["Post", "Comment"]`, or the physical
+  mapping's `domain`/`range`) was looked up as a dict key: `TypeError`, the whole
+  statistics block was lost, and `statistics_status` read `skipped_no_db`. An endpoint's
+  count is now the sum over its labels, and the physical mapping's `domain`/`range` are
+  read when the conceptual schema gives none. arango-query-core's supertypes are counted
+  too: `MULTI_LABEL` by its label, like `LABELS`, and `UNION` as the sum of its members
+  (`members`, else the conceptual `subtypes`), not as a whole collection.
 
 ## 0.20.0 — 2026-11-16
 

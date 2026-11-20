@@ -126,18 +126,34 @@ def compute_statistics(
             type_field = ent_mapping.get("typeField")
             type_value = ent_mapping.get("typeValue")
             est = _safe_filtered_count(db, col, type_field, type_value)
-        elif style == "LABELS":
+        elif style in ("LABELS", "MULTI_LABEL"):
             # A node may carry several labels: count the documents whose label array
             # holds this one, as PhysicalMapping.aql_entity_match matches them.
+            # ``MULTI_LABEL`` is arango-query-core's name for the same shape (a
+            # supertype in a shared collection).
             est = _safe_filtered_count(
                 db, col, ent_mapping.get("labelsField"), ent_mapping.get("labelValue") or ent_name, in_array=True
             )
+        elif style == "UNION":
+            continue  # its members' counts, summed below
         else:
             est = counts.get(col)
         if est is None:
             any_failure = True
             continue
         entities_out[ent_name] = {"estimated_count": int(est)}
+
+    # A ``UNION`` supertype (arango-query-core) has no collection of its own: it
+    # is every document of its members.
+    for ent_name, ent_mapping in (physical_mapping.get("entities") or {}).items():
+        if isinstance(ent_mapping, dict) and ent_mapping.get("style") == "UNION":
+            members = _union_members(ent_name, ent_mapping, conceptual_schema)
+            if members and all(m in entities_out for m in members):
+                entities_out[ent_name] = {
+                    "estimated_count": sum(int(entities_out[m]["estimated_count"]) for m in members)
+                }
+            else:
+                any_failure = True
 
     # ── Relationships ──────────────────────────────────────────────────
     rel_endpoints = _endpoint_map_from_conceptual(conceptual_schema)
@@ -159,8 +175,11 @@ def compute_statistics(
             continue
 
         domain, range_ = rel_endpoints.get(rel_type, (None, None))
-        source_count = int(entities_out.get(domain, {}).get("estimated_count", 0)) if domain else 0
-        target_count = int(entities_out.get(range_, {}).get("estimated_count", 0)) if range_ else 0
+        # The conceptual schema's endpoints, else the physical mapping's own.
+        domain = domain or rel_mapping.get("domain")
+        range_ = range_ or rel_mapping.get("range")
+        source_count = _endpoint_count(domain, entities_out)
+        target_count = _endpoint_count(range_, entities_out)
 
         avg_out = round(edge_count / source_count, DEGREE_ROUND) if source_count > 0 else 0.0
         avg_in = round(edge_count / target_count, DEGREE_ROUND) if target_count > 0 else 0.0
@@ -211,11 +230,46 @@ def _classify_cardinality(avg_out: float, avg_in: float) -> str:
     return "1:1"
 
 
+def _endpoint_labels(endpoint: Any) -> list[str]:
+    """A relationship endpoint's labels: one label, or several (a polymorphic
+    relationship, ``["Post", "Comment"]``)."""
+    if isinstance(endpoint, str):
+        return [endpoint] if endpoint else []
+    if isinstance(endpoint, list):
+        return list(dict.fromkeys(e for e in endpoint if isinstance(e, str) and e))
+    return []
+
+
+def _endpoint_count(endpoint: Any, entities_out: dict[str, dict[str, Any]]) -> int:
+    """The documents an endpoint stands for: the sum over its labels' counts.
+
+    A list-valued endpoint used to be looked up as a dict key, which raised
+    ``TypeError`` and lost the whole statistics block for any schema with a
+    polymorphic relationship.
+    """
+    return sum(int(entities_out.get(label, {}).get("estimated_count", 0)) for label in _endpoint_labels(endpoint))
+
+
+def _union_members(name: str, mapping: dict[str, Any], conceptual_schema: dict[str, Any] | None) -> list[str]:
+    """A ``UNION`` supertype's members: its ``members`` list, else the conceptual
+    entity's ``subtypes`` (arango-query-core reads them the same way)."""
+    members = mapping.get("members")
+    if members is None and isinstance(conceptual_schema, dict):
+        for ent in conceptual_schema.get("entities") or []:
+            if isinstance(ent, dict) and ent.get("name") == name:
+                members = ent.get("subtypes")
+                break
+    return _endpoint_labels(members)
+
+
 def _endpoint_map_from_conceptual(
     conceptual_schema: dict[str, Any] | None,
-) -> dict[str, tuple[str | None, str | None]]:
-    """Build rel_type → (fromEntity, toEntity) map from the conceptual schema."""
-    out: dict[str, tuple[str | None, str | None]] = {}
+) -> dict[str, tuple[Any, Any]]:
+    """Build rel_type → (fromEntity, toEntity) map from the conceptual schema.
+
+    Each endpoint is a label or, for a polymorphic relationship, a list of them.
+    """
+    out: dict[str, tuple[Any, Any]] = {}
     if not isinstance(conceptual_schema, dict):
         return out
     for rel in conceptual_schema.get("relationships") or []:
