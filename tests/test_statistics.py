@@ -362,3 +362,97 @@ def test_analyzer_stamps_statistics_status_when_fake_db_has_no_aql(monkeypatch) 
     res = analyzer.analyze_physical_schema(_NoAQLDB(), sample_limit_per_collection=0, use_cache=False)
     assert res.metadata.statistics is None
     assert res.metadata.statistics_status == STATISTICS_STATUS_SKIPPED_NO_DB
+
+
+# ── Polymorphic endpoints and supertypes (LDBC-shaped mappings) ──────────
+
+
+def _polymorphic_db() -> _FakeDB:
+    totals = {"post": 30, "comment": 20, "person": 5, "has_creator": 50, "reply_of": 20}
+    return _FakeDB(totals)
+
+
+_POLYMORPHIC_SNAPSHOT = {
+    "collections": [
+        {"name": "post", "type": "document"},
+        {"name": "comment", "type": "document"},
+        {"name": "person", "type": "document"},
+        {"name": "has_creator", "type": "edge"},
+        {"name": "reply_of", "type": "edge"},
+    ]
+}
+_POLYMORPHIC_MAPPING = {
+    "entities": {
+        "Post": {"style": "COLLECTION", "collectionName": "post"},
+        "Comment": {"style": "COLLECTION", "collectionName": "comment"},
+        "Person": {"style": "COLLECTION", "collectionName": "person"},
+        "Message": {"style": "UNION", "members": ["Post", "Comment"]},
+    },
+    "relationships": {
+        "HAS_CREATOR": {
+            "style": "DEDICATED_COLLECTION",
+            "edgeCollectionName": "has_creator",
+            "domain": ["Post", "Comment"],
+            "range": "Person",
+        },
+        "REPLY_OF": {
+            "style": "DEDICATED_COLLECTION",
+            "edgeCollectionName": "reply_of",
+            "domain": "Comment",
+            "range": ["Post", "Comment"],
+        },
+    },
+}
+
+
+def test_a_list_valued_endpoint_counts_every_label() -> None:
+    # A list endpoint was looked up as a dict key: TypeError, and the whole block was lost.
+    out = compute_statistics(_polymorphic_db(), _POLYMORPHIC_SNAPSHOT, _POLYMORPHIC_MAPPING, {})
+    assert out is not None and out["status"] == STATISTICS_STATUS_OK
+    creator = out["relationships"]["HAS_CREATOR"]
+    assert creator["source_count"] == 50  # 30 posts + 20 comments
+    assert creator["avg_in_degree"] == 10.0  # 50 messages over 5 people
+    assert out["relationships"]["REPLY_OF"]["target_count"] == 50
+
+
+def test_conceptual_list_endpoints_are_read_too() -> None:
+    mapping = {
+        **_POLYMORPHIC_MAPPING,
+        "relationships": {
+            k: {kk: vv for kk, vv in v.items() if kk not in ("domain", "range")}
+            for k, v in _POLYMORPHIC_MAPPING["relationships"].items()
+        },
+    }
+    conceptual = {"relationships": [{"type": "HAS_CREATOR", "fromEntity": ["Post", "Comment"], "toEntity": "Person"}]}
+    out = compute_statistics(_polymorphic_db(), _POLYMORPHIC_SNAPSHOT, mapping, conceptual)
+    assert out["relationships"]["HAS_CREATOR"]["source_count"] == 50
+
+
+def test_a_union_supertype_is_its_members_total() -> None:
+    out = compute_statistics(_polymorphic_db(), _POLYMORPHIC_SNAPSHOT, _POLYMORPHIC_MAPPING, {})
+    assert out["entities"]["Message"]["estimated_count"] == 50
+
+
+def test_a_union_with_its_members_in_the_conceptual_schema() -> None:
+    mapping = {**_POLYMORPHIC_MAPPING, "entities": {**_POLYMORPHIC_MAPPING["entities"], "Message": {"style": "UNION"}}}
+    conceptual = {"entities": [{"name": "Message", "subtypes": ["Post", "Comment"]}]}
+    out = compute_statistics(_polymorphic_db(), _POLYMORPHIC_SNAPSHOT, mapping, conceptual)
+    assert out["entities"]["Message"]["estimated_count"] == 50
+
+
+def test_a_multi_label_supertype_counts_its_label_like_labels() -> None:
+    # arango-query-core's MULTI_LABEL: a supertype in a shared collection, found by its label.
+    db = _FakeDB({"nodes": 90}, {("nodes", "labels", "Message"): 50})
+    mapping = {
+        "entities": {
+            "Message": {
+                "style": "MULTI_LABEL",
+                "collectionName": "nodes",
+                "labelsField": "labels",
+                "labelValue": "Message",
+            }
+        },
+        "relationships": {},
+    }
+    out = compute_statistics(db, {"collections": [{"name": "nodes", "type": "document"}]}, mapping, {})
+    assert out["entities"]["Message"]["estimated_count"] == 50  # not the collection's 90

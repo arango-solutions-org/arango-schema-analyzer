@@ -99,8 +99,9 @@ one label stays `LABEL`. `LABELS` is an ordinary label; arango-query-core's
 `MULTI_LABEL` is a parent type over the same storage, and the two share one field set
 (`labelsField` + `labelValue`, #36). The conceptual output is the same as under `auto`,
 and `auto` keeps emitting `LABEL`. Like `collection`, the strategy governs baseline
-inference (no LLM, or LLM fallback). `metadata.statistics` counts each `LABELS` entity
-by its own label; the SPARQL vocabulary export, the Cypher resolution index and the OWL
+inference (no LLM, or LLM fallback). `metadata.statistics` counts each `LABELS` (and
+`MULTI_LABEL`) entity by its own label, a `UNION` supertype as the sum of its members,
+and a relationship endpoint that lists several labels as the sum over them; the SPARQL vocabulary export, the Cypher resolution index and the OWL
 export (`phys:labelsField`, `phys:labelValue`) carry both fields. The shape is shared
 with arango-query-core and arango-gql-gateway. Not yet covered: taxonomy discovery and
 `aql_class_extent` key on `LABEL`. **Implementation**: `baseline.py`
