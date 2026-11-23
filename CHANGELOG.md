@@ -104,6 +104,11 @@ analysis already uses a key now reserved for mapping ids (see below).
   `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
   threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
   expire at once.
+- **Named-graph collections are read one way everywhere.** When one edge collection is
+  declared in two named graphs with different endpoints, baseline inference now takes
+  the endpoints from the first graph by name, as the sharding profile already did (it
+  took the last). An empty collection name in a graph definition is ignored by graph
+  membership and graph scoping, as the sharding profile already ignored it.
 
 ## 0.20.0 — 2026-11-16
 
