@@ -208,3 +208,32 @@ def test_analyze_emits_tenant_scope_annotations_and_report(monkeypatch):
     assert report["tenantEntity"] == "Tenant"
     assert report["denormScopedCount"] == 1
     assert report["globalCount"] == 1
+
+
+def test_no_llm_path_runs_the_same_enrichment_as_the_llm_fallback(monkeypatch):
+    """The default path (no LLM configured) runs every enrichment pass.
+
+    It used to keep its own copy of the pass list, which lacked tenant scope, so a
+    plain ``analyze_physical_schema(db)`` returned no ``tenantScope`` blocks and no
+    ``tenantScopeReport`` while the LLM-failed fallback, on the same baseline, did.
+    """
+    import schema_analyzer.analyzer as analyzer_mod
+
+    class _FailingProvider:
+        def generate(self, *, model: str, system: str, prompt: str, timeout_ms: int):
+            raise analyzer_mod.SchemaAnalyzerError("provider down", code="LLM_ERROR")
+
+    monkeypatch.setattr(analyzer_mod, "create_provider", lambda name, *, api_key: _FailingProvider())
+    fallback = AgenticSchemaAnalyzer(llm_provider="openai", api_key="k", model="m").analyze_physical_schema(
+        _MultiTenantFakeDB(), sample_limit_per_collection=0, use_cache=False
+    )
+    no_llm = AgenticSchemaAnalyzer().analyze_physical_schema(
+        _MultiTenantFakeDB(), sample_limit_per_collection=0, use_cache=False
+    )
+
+    assert fallback.metadata.used_baseline and no_llm.metadata.used_baseline
+    assert no_llm.physical_mapping["entities"]["Tenant"]["tenantScope"] == {"role": "tenant_root"}
+    assert no_llm.metadata.tenant_scope_report == fallback.metadata.tenant_scope_report
+    assert no_llm.metadata.tenant_scope_report is not None
+    for name, spec in fallback.physical_mapping["entities"].items():
+        assert no_llm.physical_mapping["entities"][name].get("tenantScope") == spec.get("tenantScope")
