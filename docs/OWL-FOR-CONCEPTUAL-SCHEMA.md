@@ -301,19 +301,27 @@ Alternative profiles:
 
 ### Physical Mapping as RDF Annotations
 
-We can extend OWL with custom annotations for physical mappings:
+We can extend OWL with custom annotations for physical mappings. The export declares
+every annotation property it can write in the Turtle header, whether or not a given
+analysis uses it:
 
 ```turtle
 @prefix phys: <http://arangodb.com/schema/physical#> .
 
-# Define our custom annotation properties
+# The annotation properties the export declares
 phys:mappingStyle a owl:AnnotationProperty .
 phys:collectionName a owl:AnnotationProperty .
 phys:typeField a owl:AnnotationProperty .
 phys:typeValue a owl:AnnotationProperty .
+phys:labelsField a owl:AnnotationProperty .
+phys:labelValue a owl:AnnotationProperty .
 phys:edgeCollectionName a owl:AnnotationProperty .
+phys:observedCardinality a owl:AnnotationProperty .
+phys:attributeName a owl:AnnotationProperty .
+phys:attributePath a owl:AnnotationProperty .
+phys:multiValued a owl:AnnotationProperty .
 
-# Apply physical mappings to conceptual classes
+# Physical mappings on classes
 :User phys:mappingStyle "COLLECTION" ;
     phys:collectionName "users" .
 
@@ -322,14 +330,42 @@ phys:edgeCollectionName a owl:AnnotationProperty .
     phys:typeField "type" ;
     phys:typeValue "post" .
 
+:Person phys:mappingStyle "LABELS" ;
+    phys:collectionName "nodes" ;
+    phys:labelsField "labels" ;
+    phys:labelValue "Person" .
+
+# Physical mappings on object properties
 :follows phys:mappingStyle "DEDICATED_COLLECTION" ;
-    phys:edgeCollectionName "follows" .
+    phys:edgeCollectionName "follows" ;
+    phys:observedCardinality "N:M" .
 
 :authored phys:mappingStyle "GENERIC_WITH_TYPE" ;
-    phys:collectionName "relationships" ;
+    phys:edgeCollectionName "relationships" ;
     phys:typeField "relation" ;
     phys:typeValue "authored" .
+
+# Physical locations on datatype properties
+:email phys:attributeName "email_address" .
+:city phys:attributePath "[\"address\", \"city\"]" .
+:tags phys:multiValued "true" .
 ```
+
+| Annotation | On | Value |
+|---|---|---|
+| `phys:mappingStyle` | class, object property | The mapping style: `COLLECTION`, `LABEL`, `LABELS`, `DEDICATED_COLLECTION`, `GENERIC_WITH_TYPE`, … |
+| `phys:collectionName` | class | The document collection holding the class's documents. |
+| `phys:typeField` | class, object property | The discriminator field of a `LABEL` class or a `GENERIC_WITH_TYPE` edge. |
+| `phys:typeValue` | class, object property | The discriminator value that selects this class or relationship. |
+| `phys:labelsField` | class | For `LABELS`: the field holding each document's list of labels. |
+| `phys:labelValue` | class | For `LABELS`: the label in that list that selects this class. |
+| `phys:edgeCollectionName` | object property | The edge collection holding the relationship's edges. |
+| `phys:observedCardinality` | object property | `1:1`, `1:N`, `N:1` or `N:M`, from sampled statistics (`metadata.statistics`); the export also marks `owl:FunctionalProperty` / `owl:InverseFunctionalProperty` from it. It is what was observed, not a constraint. |
+| `phys:attributeName` | datatype property | The stored field, written only when it differs from the property's IRI local name. |
+| `phys:attributePath` | datatype property | For a value inside a nested object: a JSON array with one name per level. `phys:attributeName` is then absent. |
+| `phys:multiValued` | datatype property | `"true"` when the field holds a list: read one value per element. |
+
+The JSON-LD export carries the same annotations on the same nodes.
 
 ---
 
