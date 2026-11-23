@@ -3,42 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 from .conceptual import ConceptualSchema
-from .defaults import (
-    FULL_LABEL_SET_HARD_CAP,
-    MAX_TYPE_FIELD_DISTINCT_VALUES,
-    SAMPLE_VALUE_TOP_K,
-    UNRESOLVED_ENDPOINT,
-)
+from .defaults import UNRESOLVED_ENDPOINT
 from .mapping import PhysicalMapping
 from .nested_fields import conflicted_names
 from .type_detection import (
     _pick_best_type_field,
     _type_values_for_field,
     infer_entity_type_from_collection_name,
+    type_field_max_distinct,
 )
 from .utils import index_edge_definitions_by_collection, pascal_case
 
 
-def _choose_type_field(col: dict[str, Any], *, is_edge: bool, max_distinct_values: int | None = None) -> str | None:
-    return _pick_best_type_field(col, is_edge=is_edge, max_distinct_values=max_distinct_values)
-
-
 def _snapshot_max_distinct(snapshot: dict[str, Any]) -> int:
-    """Discriminator acceptance bound for this snapshot.
-
-    Scales with the snapshot's ``sample_value_top_k`` so a caller who raised
-    the value-sampling cap (``max_entity_types``) doesn't get the field
-    rejected for exceeding the default 32-distinct-value bound. A full-label-set
-    snapshot (``min_type_value_count`` > 0) accepts the high-cardinality
-    discriminator outright so every above-floor label maps.
-    """
-    floor = snapshot.get("min_type_value_count")
-    if isinstance(floor, int) and floor > 0:
-        return FULL_LABEL_SET_HARD_CAP
-    top_k = snapshot.get("sample_value_top_k")
-    if not isinstance(top_k, int) or top_k <= 0:
-        top_k = SAMPLE_VALUE_TOP_K
-    return max(MAX_TYPE_FIELD_DISTINCT_VALUES, top_k)
+    """Discriminator acceptance bound for this snapshot (:func:`type_field_max_distinct`)."""
+    return type_field_max_distinct(snapshot.get("sample_value_top_k"), snapshot.get("min_type_value_count"))
 
 
 def type_value_caps_from_snapshot(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -54,6 +33,18 @@ def type_value_caps_from_snapshot(snapshot: dict[str, Any]) -> tuple[list[dict[s
     the first list, edge collections the second. Both empty when nothing was
     dropped (the common case).
     """
+    return _type_value_caps(snapshot, {})
+
+
+def _type_value_caps(
+    snapshot: dict[str, Any], picked: dict[int, str | None]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """:func:`type_value_caps_from_snapshot`, reusing type fields already picked.
+
+    ``picked`` maps ``id()`` of a collection entry to the field the caller chose for
+    it with this snapshot's bound (:func:`infer_baseline_from_snapshot`'s own loops);
+    an entry not in it is picked here.
+    """
     entity_caps: list[dict[str, Any]] = []
     relationship_caps: list[dict[str, Any]] = []
     collections = snapshot.get("collections") or []
@@ -65,10 +56,13 @@ def type_value_caps_from_snapshot(snapshot: dict[str, Any]) -> tuple[list[dict[s
         if not isinstance(col, dict):
             continue
         is_edge = col.get("type") == "edge"
-        type_field = _choose_type_field(col, is_edge=is_edge, max_distinct_values=max_distinct)
+        if id(col) in picked:
+            type_field = picked[id(col)]
+        else:
+            type_field = _pick_best_type_field(col, is_edge=is_edge, max_distinct_values=max_distinct)
         if not type_field:
             continue
-        captured = _iter_type_values(col, type_field)
+        captured = _type_values_for_field(col, type_field)
         distinct = (col.get("sample_field_distinct_counts") or {}).get(type_field)
         if not isinstance(distinct, int) or distinct <= len(captured):
             continue
@@ -91,10 +85,6 @@ def type_value_caps_from_snapshot(snapshot: dict[str, Any]) -> tuple[list[dict[s
         (relationship_caps if is_edge else entity_caps).append(cap)
 
     return entity_caps, relationship_caps
-
-
-def _iter_type_values(col: dict[str, Any], field: str) -> list[str]:
-    return _type_values_for_field(col, field)
 
 
 def _resolve_endpoints(
@@ -136,14 +126,7 @@ def _resolve_endpoints(
             to_ent = _resolve_single_entity(to_cols, collection_to_entities)
             return from_ent, to_ent
 
-        # Strategy 3: Union-level fallback
-        from_cols = endpoints.get("from_collections") or []
-        to_cols = endpoints.get("to_collections") or []
-        from_ent = _resolve_single_entity(from_cols, collection_to_entities)
-        to_ent = _resolve_single_entity(to_cols, collection_to_entities)
-        return from_ent, to_ent
-
-    # Dedicated edge collection
+    # Strategy 3 (union-level fallback), and the only one for a dedicated edge collection
     from_cols = endpoints.get("from_collections") or []
     to_cols = endpoints.get("to_collections") or []
     from_ent = _resolve_single_entity(from_cols, collection_to_entities)
@@ -352,6 +335,17 @@ def _extract_indexes_for_mapping(col: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _add_indexes_and_properties(
+    mapping: dict[str, Any], indexes: list[dict[str, Any]], props: list[dict[str, Any]]
+) -> None:
+    """Attach a mapping's ``indexes`` and ``properties``, each only when non-empty."""
+    if indexes:
+        mapping["indexes"] = indexes
+    prop_map = _build_property_mapping(props)
+    if prop_map:
+        mapping["properties"] = prop_map
+
+
 def _build_property_mapping(props: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """
     Build a conceptual-property-name → physical-field-info mapping.
@@ -417,6 +411,9 @@ def infer_baseline_from_snapshot(
     pm = PhysicalMapping.empty()
     detected_patterns: list[str] = []
     max_distinct = _snapshot_max_distinct(snapshot)
+    # id(collection entry) → the type field picked for it, handed to the caps report
+    # so each collection's field is decided once.
+    picked: dict[int, str | None] = {}
 
     collections = snapshot.get("collections") or []
     if not isinstance(collections, list):
@@ -439,8 +436,11 @@ def infer_baseline_from_snapshot(
         col_indexes = _extract_indexes_for_mapping(col)
 
         type_field = (
-            None if collection_per_entity else _choose_type_field(col, is_edge=False, max_distinct_values=max_distinct)
+            None
+            if collection_per_entity
+            else _pick_best_type_field(col, is_edge=False, max_distinct_values=max_distinct)
         )
+        picked[id(col)] = type_field
         if type_field:
             if "LPG_LABEL" not in detected_patterns:
                 detected_patterns.append("LPG_LABEL")
@@ -458,7 +458,7 @@ def infer_baseline_from_snapshot(
                 for it in (col.get("sample_field_value_counts") or {}).get(type_field) or []
                 if isinstance(it, dict)
             }
-            for raw in _iter_type_values(col, type_field):
+            for raw in _type_values_for_field(col, type_field):
                 ent_name = pascal_case(raw)
                 props = _extract_properties(col, type_value=raw)
                 entity: dict[str, Any] = {
@@ -497,11 +497,7 @@ def infer_baseline_from_snapshot(
                 # actually sees in the data — is kept as an accepted alias.
                 if raw != ent_name:
                     ent_mapping["aliases"] = [raw]
-                if col_indexes:
-                    ent_mapping["indexes"] = col_indexes
-                prop_map = _build_property_mapping(props)
-                if prop_map:
-                    ent_mapping["properties"] = prop_map
+                _add_indexes_and_properties(ent_mapping, col_indexes, props)
                 pm.entities[ent_name] = ent_mapping
                 collection_to_entities.setdefault(collection_name, []).append(ent_name)
         else:
@@ -511,11 +507,7 @@ def infer_baseline_from_snapshot(
             props = _extract_properties(col)
             cs.entities.append({"name": ent_name, "labels": [ent_name], "properties": _conceptual_properties(props)})
             ent_mapping = {"style": "COLLECTION", "collectionName": collection_name}
-            if col_indexes:
-                ent_mapping["indexes"] = col_indexes
-            prop_map = _build_property_mapping(props)
-            if prop_map:
-                ent_mapping["properties"] = prop_map
+            _add_indexes_and_properties(ent_mapping, col_indexes, props)
             pm.entities[ent_name] = ent_mapping
             collection_to_entities.setdefault(collection_name, []).append(ent_name)
 
@@ -536,12 +528,15 @@ def infer_baseline_from_snapshot(
         edge_indexes = _extract_indexes_for_mapping(col)
 
         type_field = (
-            None if collection_per_entity else _choose_type_field(col, is_edge=True, max_distinct_values=max_distinct)
+            None
+            if collection_per_entity
+            else _pick_best_type_field(col, is_edge=True, max_distinct_values=max_distinct)
         )
+        picked[id(col)] = type_field
         if type_field:
             if "LPG_GENERIC_EDGE" not in detected_patterns:
                 detected_patterns.append("LPG_GENERIC_EDGE")
-            for raw in _iter_type_values(col, type_field):
+            for raw in _type_values_for_field(col, type_field):
                 rel_type = str(raw).strip()
                 if not rel_type:
                     continue
@@ -566,11 +561,7 @@ def infer_baseline_from_snapshot(
                     "typeField": type_field,
                     "typeValue": raw,
                 }
-                if edge_indexes:
-                    rel_mapping["indexes"] = edge_indexes
-                prop_map = _build_property_mapping(props)
-                if prop_map:
-                    rel_mapping["properties"] = prop_map
+                _add_indexes_and_properties(rel_mapping, edge_indexes, props)
                 pm.relationships[rel_type] = rel_mapping
         else:
             if "PG_DEDICATED_EDGE" not in detected_patterns:
@@ -592,17 +583,13 @@ def infer_baseline_from_snapshot(
                 }
             )
             rel_mapping = {"style": "DEDICATED_COLLECTION", "edgeCollectionName": collection_name}
-            if edge_indexes:
-                rel_mapping["indexes"] = edge_indexes
-            prop_map = _build_property_mapping(props)
-            if prop_map:
-                rel_mapping["properties"] = prop_map
+            _add_indexes_and_properties(rel_mapping, edge_indexes, props)
             pm.relationships[rel_type] = rel_mapping
 
     entity_caps: list[dict[str, Any]] = []
     relationship_caps: list[dict[str, Any]] = []
     if not collection_per_entity:
-        entity_caps, relationship_caps = type_value_caps_from_snapshot(snapshot)
+        entity_caps, relationship_caps = _type_value_caps(snapshot, picked)
 
     conceptual_json = cs.to_json()
     if label_subclass_proposals:

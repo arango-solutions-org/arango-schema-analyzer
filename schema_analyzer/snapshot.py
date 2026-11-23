@@ -20,7 +20,6 @@ from ._arango import (
 )
 from .defaults import (
     FULL_LABEL_SET_HARD_CAP,
-    MAX_TYPE_FIELD_DISTINCT_VALUES,
     MAX_TYPE_VALUE_LENGTH,
     SAMPLE_VALUE_OVERFLOW_K,
     SAMPLE_VALUE_TOP_K,
@@ -37,6 +36,7 @@ from .type_detection import (
     _type_values_for_field,
     infer_entity_type_from_collection_name,
     infer_relationship_type_from_collection_name,
+    type_field_max_distinct,
 )
 from .utils import SYSTEM_FIELDS, graph_collections, sha256_hex, stable_dumps
 
@@ -278,7 +278,6 @@ def _detect_observed_fields(
     *,
     type_field: str | None = None,
     type_values: list[str] | None = None,
-    is_edge: bool = False,
     nested_field_depth: int = 0,
 ) -> dict[str, Any]:
     """
@@ -387,6 +386,9 @@ def _detect_observed_fields_nested(
         out: dict[str, Any] = {"by_type": by_type}
         if paths_by_type:
             out["nested_paths_by_type"] = paths_by_type
+        # Conflicts and skipped lists are judged over the whole collection's sample: one
+        # collection holding both shapes under a name is what a person has to settle.
+        whole = summarize_documents(all_docs, depth, exclude=exclude)
     else:
         try:
             all_docs = list(
@@ -398,13 +400,10 @@ def _detect_observed_fields_nested(
             )
         except Exception:
             return {}
-        flat = summarize_documents(all_docs, depth, exclude=exclude)
-        out = {"fields": flat["fields"]}
-        if flat["paths"]:
-            out["nested_paths"] = flat["paths"]
-    # Conflicts and skipped lists are judged over the whole collection's sample: one
-    # collection holding both shapes under a name is what a person has to settle.
-    whole = summarize_documents(all_docs, depth, exclude=exclude)
+        whole = summarize_documents(all_docs, depth, exclude=exclude)
+        out = {"fields": whole["fields"]}
+        if whole["paths"]:
+            out["nested_paths"] = whole["paths"]
     lists = list_fields_of(all_docs, exclude=exclude)
     if lists:
         out["list_fields"] = lists
@@ -445,6 +444,24 @@ def _detect_edge_endpoint_type_fields(
     if from_field and to_field:
         return from_field, to_field
     return None
+
+
+def _fold_by_relation(rows: Iterable[Any], from_key: str, to_key: str, kind: str) -> dict[str, dict[str, list[str]]]:
+    """Fold ``{relType, <from_key>, <to_key>}`` rows into ``{rel: {from_<kind>, to_<kind>}}``.
+
+    Rows without a relation type are skipped, as are empty endpoint values; both lists
+    and the relations are sorted.
+    """
+    folded: dict[str, tuple[set[str], set[str]]] = {}
+    for item in rows:
+        if not isinstance(item, dict) or not item.get("relType"):
+            continue
+        froms, tos = folded.setdefault(str(item["relType"]), (set(), set()))
+        if item.get(from_key):
+            froms.add(str(item[from_key]))
+        if item.get(to_key):
+            tos.add(str(item[to_key]))
+    return {rt: {f"from_{kind}": sorted(f), f"to_{kind}": sorted(t)} for rt, (f, t) in sorted(folded.items())}
 
 
 def _detect_edge_endpoints(
@@ -516,24 +533,9 @@ def _detect_edge_endpoints(
                     "toField": to_field,
                 },
             )
-            direct: dict[str, dict[str, set[str]]] = {}
-            for item in cursor:
-                if not isinstance(item, dict) or not item.get("relType"):
-                    continue
-                rt_str = str(item["relType"])
-                direct.setdefault(rt_str, {"from": set(), "to": set()})
-                if item.get("fromType"):
-                    direct[rt_str]["from"].add(str(item["fromType"]))
-                if item.get("toType"):
-                    direct[rt_str]["to"].add(str(item["toType"]))
+            direct = _fold_by_relation(cursor, "fromType", "toType", "entity_types")
             if direct:
-                result["entity_types_by_relation"] = {
-                    rt: {
-                        "from_entity_types": sorted(ep["from"]),
-                        "to_entity_types": sorted(ep["to"]),
-                    }
-                    for rt, ep in sorted(direct.items())
-                }
+                result["entity_types_by_relation"] = direct
                 result["endpoint_type_fields"] = {"from": from_field, "to": to_field}
                 return result
         except Exception as exc:
@@ -566,28 +568,7 @@ def _detect_edge_endpoints(
                         "nodeTypeField": node_type_field,
                     },
                 )
-                endpoints_by_type: dict[str, dict[str, set[str]]] = {}
-                for item in cursor:
-                    if not isinstance(item, dict):
-                        continue
-                    rt = item.get("relType")
-                    ft = item.get("fromType")
-                    tt = item.get("toType")
-                    if rt:
-                        rt_str = str(rt)
-                        endpoints_by_type.setdefault(rt_str, {"from": set(), "to": set()})
-                        if ft:
-                            endpoints_by_type[rt_str]["from"].add(str(ft))
-                        if tt:
-                            endpoints_by_type[rt_str]["to"].add(str(tt))
-
-                result["entity_types_by_relation"] = {
-                    rt: {
-                        "from_entity_types": sorted(ep["from"]),
-                        "to_entity_types": sorted(ep["to"]),
-                    }
-                    for rt, ep in sorted(endpoints_by_type.items())
-                }
+                result["entity_types_by_relation"] = _fold_by_relation(cursor, "fromType", "toType", "entity_types")
                 return result
             except Exception as exc:
                 logger.debug("LPG endpoint resolution failed for %s: %s", edge_collection_name, exc)
@@ -607,28 +588,7 @@ def _detect_edge_endpoints(
                 "relField": rel_type_field,
             },
         )
-        cols_by_type: dict[str, dict[str, set[str]]] = {}
-        for item in cursor:
-            if not isinstance(item, dict):
-                continue
-            rt = item.get("relType")
-            fc = item.get("fromCol")
-            tc = item.get("toCol")
-            if rt:
-                rt_str = str(rt)
-                cols_by_type.setdefault(rt_str, {"from": set(), "to": set()})
-                if fc:
-                    cols_by_type[rt_str]["from"].add(str(fc))
-                if tc:
-                    cols_by_type[rt_str]["to"].add(str(tc))
-
-        result["collections_by_relation"] = {
-            rt: {
-                "from_collections": sorted(ep["from"]),
-                "to_collections": sorted(ep["to"]),
-            }
-            for rt, ep in sorted(cols_by_type.items())
-        }
+        result["collections_by_relation"] = _fold_by_relation(cursor, "fromCol", "toCol", "collections")
     except Exception as exc:
         logger.debug("Per-relation collection resolution failed for %s: %s", edge_collection_name, exc)
 
@@ -976,9 +936,7 @@ def snapshot_physical_schema(
     depth = nested_depth(nested_field_depth)
     top_k = sample_value_top_k if isinstance(sample_value_top_k, int) and sample_value_top_k > 0 else SAMPLE_VALUE_TOP_K
     floor = min_type_value_count if isinstance(min_type_value_count, int) and min_type_value_count > 0 else 0
-    # In full-label-set mode the discriminator legitimately has thousands of
-    # distinct values, so the acceptance bound must not reject it for cardinality.
-    max_distinct = FULL_LABEL_SET_HARD_CAP if floor else max(MAX_TYPE_FIELD_DISTINCT_VALUES, top_k)
+    max_distinct = type_field_max_distinct(top_k, floor)
     collections_info = db.collections()
     if isinstance(collections_info, dict):
         collections = collections_info
@@ -1063,10 +1021,13 @@ def snapshot_physical_schema(
 
     # ── Phase 3: Build doc type field map for edge endpoint resolution ──
     doc_type_info: dict[str, tuple[str, set[str]]] = {}
+    # Phase 4 reuses these picks: a document's pick reads only its phase-2 stats.
+    doc_type_fields: dict[str, str | None] = {}
     for entry in entries:
         if entry["type"] != "document":
             continue
         best_field = _pick_best_type_field(entry, is_edge=False, max_distinct_values=max_distinct)
+        doc_type_fields[entry["name"]] = best_field
         if best_field:
             values = set(_type_values_for_field(entry, best_field))
             if values:
@@ -1075,7 +1036,10 @@ def snapshot_physical_schema(
     # ── Phase 4: Detect edge endpoints and property fields ──────────────
     for entry in entries:
         is_edge = entry["type"] == "edge"
-        best_field = _pick_best_type_field(entry, is_edge=is_edge, max_distinct_values=max_distinct)
+        if is_edge:
+            best_field = _pick_best_type_field(entry, is_edge=True, max_distinct_values=max_distinct)
+        else:
+            best_field = doc_type_fields[entry["name"]]
         type_values = _type_values_for_field(entry, best_field) if best_field else None
 
         if not is_edge and best_field:
@@ -1096,27 +1060,21 @@ def snapshot_physical_schema(
             entry["name"],
             type_field=best_field,
             type_values=type_values,
-            is_edge=is_edge,
             nested_field_depth=depth,
         )
 
     # ── Phase 5: Full document sampling (optional) ──────────────────────
-    if sample_limit_per_collection and sample_limit_per_collection > 0:
+    # Only when the samples are kept: nothing else reads them.
+    if include_samples_in_snapshot and sample_limit_per_collection and sample_limit_per_collection > 0:
         for entry in entries:
             cname = entry["name"]
-            is_edge = entry["type"] == "edge"
             try:
                 cursor = aql_execute(
                     db,
                     "FOR d IN @@c LIMIT @limit RETURN d",
                     bind_vars={"@c": cname, "limit": int(sample_limit_per_collection)},
                 )
-                samples = list(cursor)
-                if include_samples_in_snapshot:
-                    if is_edge:
-                        entry["sample_edges"] = samples
-                    else:
-                        entry["sample_documents"] = samples
+                entry["sample_edges" if entry["type"] == "edge" else "sample_documents"] = list(cursor)
             except Exception as e:
                 entry["sample_error"] = str(e)
 

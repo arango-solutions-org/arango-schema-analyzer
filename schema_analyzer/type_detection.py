@@ -22,6 +22,7 @@ from .defaults import (
     MAX_TYPE_VALUE_LENGTH,
     MIN_TYPE_FIELD_COVERAGE_FRACTION,
     MIN_TYPE_FIELD_DISTINCT_VALUES,
+    SAMPLE_VALUE_TOP_K,
 )
 from .utils import pascal_case, singularize
 
@@ -204,6 +205,24 @@ def _mirrors_endpoint_collections(items: Any, endpoint_names: set[str]) -> bool:
         if str(it["value"]).casefold() in endpoint_names:
             mirrored += weight
     return total > 0 and mirrored / total >= ENDPOINT_MIRROR_FRACTION
+
+
+def type_field_max_distinct(top_k: Any, floor: Any) -> int:
+    """Discriminator acceptance bound (``max_distinct_values``) for one snapshot.
+
+    Scales with the value-sampling cap ``top_k`` (``sample_value_top_k``; unset or
+    non-positive means ``SAMPLE_VALUE_TOP_K``) so a caller who raised it
+    (``max_entity_types``) doesn't get the field rejected for exceeding the default
+    32-distinct-value bound. A full-label-set snapshot (``floor`` =
+    ``min_type_value_count`` > 0) accepts the high-cardinality discriminator
+    outright so every above-floor label maps. The snapshot (from its arguments) and
+    the baseline (from the snapshot's recorded values) both call this, so they pick
+    against one bound.
+    """
+    if isinstance(floor, int) and floor > 0:
+        return FULL_LABEL_SET_HARD_CAP
+    cap = top_k if isinstance(top_k, int) and top_k > 0 else SAMPLE_VALUE_TOP_K
+    return max(MAX_TYPE_FIELD_DISTINCT_VALUES, cap)
 
 
 def _pick_best_type_field(
