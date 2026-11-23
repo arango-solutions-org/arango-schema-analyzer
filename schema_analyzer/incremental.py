@@ -113,10 +113,19 @@ def coerce_prior(prior: AnalysisResult | dict[str, Any]) -> AnalysisResult:
     return AnalysisResult(conceptual_schema=conceptual, physical_mapping=physical, metadata=metadata)
 
 
-def refresh_statistics(db: StandardDatabase, prior: AnalysisResult | dict[str, Any]) -> AnalysisResult:
+def refresh_statistics(
+    db: StandardDatabase,
+    prior: AnalysisResult | dict[str, Any],
+    *,
+    exclude_collections: Iterable[str] | None = None,
+) -> AnalysisResult:
     """Stats-only refresh: preserve the prior conceptual schema + physical
     mapping, recompute just the statistics block against ``db``, and update the
-    counts fingerprint. Skips snapshotting/discriminator/sampling/LLM."""
+    counts fingerprint. Skips snapshotting/discriminator/sampling/LLM.
+
+    ``exclude_collections`` must match what the change state was assessed with, so
+    the stored counts fingerprint is the one the next run compares against.
+    """
     pr = coerce_prior(prior)
     snapshot = _minimal_snapshot(db)
     try:
@@ -143,7 +152,7 @@ def refresh_statistics(db: StandardDatabase, prior: AnalysisResult | dict[str, A
     update: dict[str, Any] = {
         "analysis_completed_at": completed,
         "transaction_time": completed,
-        "counts_fingerprint": fingerprint_physical_counts(db),
+        "counts_fingerprint": fingerprint_physical_counts(db, exclude_collections=exclude_collections),
         "incremental_refresh": "stats_only",
         "cache_hit": False,
         "valid_time": valid_time,

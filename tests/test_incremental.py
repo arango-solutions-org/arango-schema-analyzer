@@ -271,3 +271,31 @@ def test_valid_time_shape_changed_resets_to_observed():
     assert res.metadata.valid_time == {"from": res.metadata.analysis_completed_at}
     assert res.metadata.valid_time["from"] != _T0
     assert res.metadata.predecessor_fingerprint == prior_shape
+
+
+def test_excluded_collections_never_trigger_a_rerun():
+    """``exclude_collections`` holds across runs (PRD §3.13.3 / §4.1, REQ-058).
+
+    A database-resident cache collection changes on every run. The fingerprints a
+    result carries must be the ones its change state was compared with, or the next
+    run sees a change that is only in the excluded collection.
+    """
+    db = _FakeDB(cols={"users": _Col(2, count=3), "follows": _Col(3, count=2), "cache": _Col(2, count=1)})
+    analyzer = AgenticSchemaAnalyzer()
+    first = analyzer.analyze_physical_schema(db, use_cache=False)  # whole-database fingerprints
+
+    # Compared with the exclusion, the prior's fingerprints differ: one full re-analysis.
+    second = analyzer.analyze_incremental(db, prior=first, exclude_collections=["cache"], use_cache=False)
+    assert second.metadata.incremental_refresh is None
+
+    db._cols["cache"]._c = 50  # only the excluded collection moved
+    third = analyzer.analyze_incremental(db, prior=second, exclude_collections=["cache"], use_cache=False)
+    assert third.metadata.incremental_refresh == "unchanged"
+
+    db._cols["users"]._c = 30  # real data moved: stats-only refresh
+    fourth = analyzer.analyze_incremental(db, prior=third, exclude_collections=["cache"], use_cache=False)
+    assert fourth.metadata.incremental_refresh == "stats_only"
+
+    db._cols["cache"]._c = 99  # only the excluded collection moved again
+    fifth = analyzer.analyze_incremental(db, prior=fourth, exclude_collections=["cache"], use_cache=False)
+    assert fifth.metadata.incremental_refresh == "unchanged"

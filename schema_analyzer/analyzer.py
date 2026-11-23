@@ -741,13 +741,22 @@ class AgenticSchemaAnalyzer:
             # §3.13.5: the shape changed (or there was no prior fingerprint), so valid
             # time stays `observed` (the full analysis already stamped it); record the
             # predecessor shape fingerprint so consumers can link the two versions.
+            # The full analysis stamps fingerprints of the whole database; keep the ones
+            # just compared (with ``exclude_collections``) so the next run compares like
+            # with like instead of seeing a shape change every time.
             return AnalysisResult(
                 conceptual_schema=result.conceptual_schema,
                 physical_mapping=result.physical_mapping,
-                metadata=result.metadata.model_copy(update={"predecessor_fingerprint": pr.metadata.shape_fingerprint}),
+                metadata=result.metadata.model_copy(
+                    update={
+                        "predecessor_fingerprint": pr.metadata.shape_fingerprint,
+                        "shape_fingerprint": state["shapeFingerprint"],
+                        "counts_fingerprint": state["countsFingerprint"],
+                    }
+                ),
             )
         if status == CHANGE_STATS_CHANGED:
-            return refresh_statistics(db, pr)
+            return refresh_statistics(db, pr, exclude_collections=exclude_collections)
 
         # unchanged — the fingerprint match just revalidated every element.
         # Stamp copies so the caller's ``prior`` is never mutated in place.
