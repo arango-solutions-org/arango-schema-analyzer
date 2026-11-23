@@ -64,6 +64,12 @@ analysis already uses a key now reserved for mapping ids (see below).
   picks every field it does not recognise will now pick `_key` too.
 
 ### Fixed
+- **The default no-LLM path now annotates tenant scope.** `analyze_physical_schema(db)`
+  without an LLM provider kept its own copy of the enrichment-pass list, which lacked
+  tenant scope, so it returned no `physicalMapping.entities[*].tenantScope` and no
+  `metadata.tenantScopeReport`; the LLM path and its baseline fallback did. All three
+  paths now run one shared list (`analyzer._apply_snapshot_passes`). The no-LLM result
+  also reports `provider` in lower case, like the other paths.
 - **Setting `mask_field_values` and `screen_field_values` together no longer skips the
   screen.** `mask_field_values` masks value counts but leaves sample documents as they
   are, and with both set the screen was not run, so a field it would have picked went out
