@@ -126,6 +126,14 @@ analysis already uses a key now reserved for mapping ids (see below).
   `LIMIT` query of up to that many documents on every collection and threw the rows
   away; the eval runner paid for it on every run. The query now runs only when the
   samples are kept, and a failure of it can no longer add `sample_error` when they are not.
+- **The snapshot no longer reads an endpoint mirror as an edge's relation field.** An
+  edge field that only repeats the collection each edge points into (the IAM demo's
+  `destination_sub_type`) is not a relation type (0.14.1), but the snapshot picked each
+  edge's type field before it had read the endpoint collections, so the rule never
+  applied there: it split the edge's endpoints and fields by that field's values, and
+  the LLM was shown `CAN_ACCESS` divided into `aws_ec2_instance`, `aws_s3_bucket`, ….
+  The baseline, which picks after, rejected the field, so the two disagreed. The
+  snapshot now reads the endpoint collections first and picks as the baseline does.
 
 ## 0.20.0 — 2026-11-16
 
