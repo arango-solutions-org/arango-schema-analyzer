@@ -76,6 +76,15 @@ analysis already uses a key now reserved for mapping ids (see below).
   in the sample documents unmasked. The screen now runs either way. The value counts keep
   `mask_field_values`' tokens, and the screen withholds its fields and keys in the
   sample documents.
+- **`diff_analyses`, `to_csi` and the exports read an `AnalysisResult` the same as its
+  JSON.** `normalize_analysis_dict` dumped a model with snake_case metadata keys
+  (`health_score`), while readers looked up the contract's camelCase names, so
+  `diff_analyses` on two results from `analyze_physical_schema` reported no health-score
+  change, `to_csi` dropped `provenance.unresolvedFieldLocations`, and the cypher export's
+  `metadata` keys depended on the input type. A model now normalizes to the contract's
+  camelCase keys; `diff` and `csi` also read the snake_case name of a hand-built dict
+  (one shared `utils.meta_get` replaces two private copies). The JSON tool contract was
+  not affected.
 - **`metadata.statistics` survives polymorphic relationships.** A relationship whose
   endpoint is a list of labels (`fromEntity: ["Post", "Comment"]`, or the physical
   mapping's `domain`/`range`) was looked up as a dict key: `TypeError`, the whole

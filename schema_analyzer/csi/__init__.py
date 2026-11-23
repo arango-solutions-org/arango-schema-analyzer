@@ -37,6 +37,7 @@ from jsonschema import Draft202012Validator
 
 from ..defaults import FALLBACK_LIBRARY_VERSION
 from ..errors import SchemaAnalyzerError
+from ..utils import meta_get as _meta_get
 from ..utils import normalize_analysis_dict
 
 CSI_VERSION = "1"
@@ -75,13 +76,6 @@ def _library_version() -> str:
         return _pkg_version("arangodb-schema-analyzer")
     except PackageNotFoundError:  # pragma: no cover - source checkout without install
         return FALLBACK_LIBRARY_VERSION
-
-
-def _meta_get(meta: dict[str, Any], *keys: str) -> Any:
-    for k in keys:
-        if isinstance(meta, dict) and meta.get(k) is not None:
-            return meta[k]
-    return None
 
 
 def build_provenance(
@@ -363,7 +357,7 @@ def _settle_property_mappings(doc: dict[str, Any], metadata: dict[str, Any]) -> 
         if isinstance(spec, dict) and isinstance(spec.get("properties"), dict)
         for entry in spec["properties"].values()
     )
-    raw_nested = metadata.get("nestedFields")
+    raw_nested = _meta_get(metadata, "nestedFields", "nested_fields")
     nested: dict[str, Any] = raw_nested if isinstance(raw_nested, dict) else {}
     raw_conflicts = nested.get("conflicts")
     conflicts: list[Any] = raw_conflicts if isinstance(raw_conflicts, list) else []
