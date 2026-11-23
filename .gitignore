@@ -44,11 +44,13 @@ eval_*.json
 .prd-drift-queue/
 .pattern-capture-queue/
 # .claude/ is per-machine (hooks, settings, shared-memory skills), except the
-# repo-specific /pr-review skill, which is project knowledge and is shared.
+# repo-specific /pr-review and /code-quality skills, which are project knowledge
+# and are shared.
 .claude/*
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/pr-review/
+!.claude/skills/code-quality/
 CLAUDE.md
 .no-drift-gate
 .cursor/.shared-memory-sessions/

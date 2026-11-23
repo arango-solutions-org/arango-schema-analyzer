@@ -136,11 +136,11 @@ you actually ran them.
     An unmarked difference is a fork. Going the other way, an RSA release that
     changes the core needs a port here. RSA 0.9.0 did not change it; it only
     added a Snowflake sampler and its factory.
-  - **Two `singularize` functions** with different rules: `utils.singularize`
-    (used by FK inference, type detection, quality, eval scoring; handles `-ie`
-    roots and `-sses`) and `csi.naming.singularize` (used by CSI naming). A
-    naming fix must say which one it changes, and whether the other needs it.
-    Until #10 only the CSI one handled upper-case names.
+  - **One singularizer, two names.** `utils.singularize` (FK inference, type
+    detection, quality, eval scoring) delegates to `csi.naming.singularize`
+    since r2g-arango#30; the two used to disagree. A naming fix changes
+    `csi.naming` and is checked against the vendored
+    `csi/naming_known_answers.py`, shared with relational-schema-analyzer and r2g.
 - **Schema copies byte-identical.** The in-package schema and its `docs/` twin
   are kept identical and parity-tested; a change to one that misses the other is
   a finding even when every other test passes.
