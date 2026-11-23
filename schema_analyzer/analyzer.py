@@ -85,6 +85,26 @@ from .workflow import async_generate_validate_repair, run_generate_validate_repa
 logger = logging.getLogger(__name__)
 
 
+def _apply_snapshot_passes(db: Any, data: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    """Run every snapshot-based enrichment pass on ``data``, in order.
+
+    The one list for all three analysis paths (no LLM, LLM, LLM failed → baseline),
+    so a pass added here reaches every caller. The no-LLM path used to keep its own
+    copy, which lacked ``_apply_tenant_scope``. Tenant scope runs before statistics.
+    """
+    _apply_nested_fields(data, snapshot)
+    _apply_list_values(data, snapshot)
+    _apply_sharding_profile(data, snapshot)
+    _apply_shard_families(data)
+    _apply_multitenancy(data, snapshot)
+    _apply_vci(data, snapshot)
+    _apply_rdf_topology(data, snapshot)
+    _apply_graphrag(data, snapshot)
+    _apply_graph_membership(data, snapshot)
+    _apply_tenant_scope(data)
+    _apply_statistics(db, data, snapshot)
+
+
 _PROVENANCE_CACHE_STRIP = (
     "run_id",
     "analysis_started_at",
@@ -479,16 +499,7 @@ class AgenticSchemaAnalyzer:
                 "conceptualSchema": baseline.get("conceptualSchema", {}),
                 "metadata": {"detectedPatterns": list(baseline.get("detectedPatterns", []))},
             }
-            _apply_nested_fields(stats_holder, snapshot)
-            _apply_list_values(stats_holder, snapshot)
-            _apply_sharding_profile(stats_holder, snapshot)
-            _apply_shard_families(stats_holder)
-            _apply_multitenancy(stats_holder, snapshot)
-            _apply_vci(stats_holder, snapshot)
-            _apply_rdf_topology(stats_holder, snapshot)
-            _apply_graphrag(stats_holder, snapshot)
-            _apply_graph_membership(stats_holder, snapshot)
-            _apply_statistics(db, stats_holder, snapshot)
+            _apply_snapshot_passes(db, stats_holder, snapshot)
             # Enrichment must run on this path too. It is the *default* path — no LLM
             # provider configured — so hooking only the LLM path in `_build_result` would
             # leave the capability unreachable for most callers.
@@ -526,7 +537,7 @@ class AgenticSchemaAnalyzer:
                 taxonomy_status=baseline_taxonomy_status,
                 assumptions=[],
                 review_required=True,
-                provider=str(self.llm_provider) if self.llm_provider else None,
+                provider=str(self.llm_provider).lower() if self.llm_provider else None,
                 model=None,
                 repair_attempts=0,
                 used_baseline=True,
@@ -543,6 +554,7 @@ class AgenticSchemaAnalyzer:
                 rdf_topology=stats_holder["metadata"].get("rdfTopology"),
                 graph_rag=stats_holder["metadata"].get("graphRag"),
                 graph_membership=stats_holder["metadata"].get("graphMembership"),
+                tenant_scope_report=stats_holder["metadata"].get("tenantScopeReport"),
                 arango_product=_arango_product_dict_for(snapshot),
                 arango_product_status=_arango_product_status_for(snapshot),
                 quality_metrics=baseline_quality,
@@ -668,17 +680,7 @@ class AgenticSchemaAnalyzer:
             errors.append(str(e))
             repair_attempts = 0
 
-        _apply_nested_fields(data, prep.snapshot)
-        _apply_list_values(data, prep.snapshot)
-        _apply_sharding_profile(data, prep.snapshot)
-        _apply_shard_families(data)
-        _apply_multitenancy(data, prep.snapshot)
-        _apply_vci(data, prep.snapshot)
-        _apply_rdf_topology(data, prep.snapshot)
-        _apply_graphrag(data, prep.snapshot)
-        _apply_graph_membership(data, prep.snapshot)
-        _apply_tenant_scope(data)
-        _apply_statistics(db, data, prep.snapshot)
+        _apply_snapshot_passes(db, data, prep.snapshot)
 
         return self._build_result(
             snapshot=prep.snapshot,
@@ -860,17 +862,7 @@ class AgenticSchemaAnalyzer:
             errors.append(str(e))
             repair_attempts = 0
 
-        _apply_nested_fields(data, prep.snapshot)
-        _apply_list_values(data, prep.snapshot)
-        _apply_sharding_profile(data, prep.snapshot)
-        _apply_shard_families(data)
-        _apply_multitenancy(data, prep.snapshot)
-        _apply_vci(data, prep.snapshot)
-        _apply_rdf_topology(data, prep.snapshot)
-        _apply_graphrag(data, prep.snapshot)
-        _apply_graph_membership(data, prep.snapshot)
-        _apply_tenant_scope(data)
-        _apply_statistics(db, data, prep.snapshot)
+        _apply_snapshot_passes(db, data, prep.snapshot)
 
         return self._build_result(
             snapshot=prep.snapshot,

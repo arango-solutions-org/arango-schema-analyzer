@@ -20,16 +20,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .utils import meta_get as _meta_get
 from .utils import normalize_analysis_dict
 
 HISTORY_SCHEMA_VERSION = 1
-
-
-def _meta_get(meta: dict[str, Any], *keys: str) -> Any:
-    for k in keys:
-        if k in meta and meta[k] is not None:
-            return meta[k]
-    return None
 
 
 def metric_snapshot(analysis: Any) -> dict[str, Any]:

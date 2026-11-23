@@ -108,6 +108,18 @@ def index_edge_definitions_by_collection(
     return out
 
 
+def meta_get(meta: Any, *keys: str) -> Any:
+    """The first non-``None`` value of ``keys`` in ``meta``, else ``None``.
+
+    For metadata read under its camelCase name with a snake_case fallback, as in a
+    hand-built dict that uses the model's field names.
+    """
+    for k in keys:
+        if isinstance(meta, dict) and meta.get(k) is not None:
+            return meta[k]
+    return None
+
+
 def normalize_analysis_dict(analysis: Any) -> dict[str, Any]:
     """
     Coerce an ``AnalysisResult`` (pydantic model) or already-serialized
@@ -128,7 +140,9 @@ def normalize_analysis_dict(analysis: Any) -> dict[str, Any]:
     ``data.get("conceptual_schema") or data.get("conceptualSchema")``).
     """
     if hasattr(analysis, "model_dump"):
-        data = dict(analysis.model_dump())
+        # By alias, so a model's metadata has the same camelCase keys as the contract
+        # (``healthScore``, not ``health_score``) and readers need only one spelling.
+        data = dict(analysis.model_dump(by_alias=True))
     elif isinstance(analysis, dict):
         data = dict(analysis)
     else:

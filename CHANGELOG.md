@@ -64,12 +64,27 @@ analysis already uses a key now reserved for mapping ids (see below).
   picks every field it does not recognise will now pick `_key` too.
 
 ### Fixed
+- **The default no-LLM path now annotates tenant scope.** `analyze_physical_schema(db)`
+  without an LLM provider kept its own copy of the enrichment-pass list, which lacked
+  tenant scope, so it returned no `physicalMapping.entities[*].tenantScope` and no
+  `metadata.tenantScopeReport`; the LLM path and its baseline fallback did. All three
+  paths now run one shared list (`analyzer._apply_snapshot_passes`). The no-LLM result
+  also reports `provider` in lower case, like the other paths.
 - **Setting `mask_field_values` and `screen_field_values` together no longer skips the
   screen.** `mask_field_values` masks value counts but leaves sample documents as they
   are, and with both set the screen was not run, so a field it would have picked went out
   in the sample documents unmasked. The screen now runs either way. The value counts keep
   `mask_field_values`' tokens, and the screen withholds its fields and keys in the
   sample documents.
+- **`diff_analyses`, `to_csi` and the exports read an `AnalysisResult` the same as its
+  JSON.** `normalize_analysis_dict` dumped a model with snake_case metadata keys
+  (`health_score`), while readers looked up the contract's camelCase names, so
+  `diff_analyses` on two results from `analyze_physical_schema` reported no health-score
+  change, `to_csi` dropped `provenance.unresolvedFieldLocations`, and the cypher export's
+  `metadata` keys depended on the input type. A model now normalizes to the contract's
+  camelCase keys; `diff` and `csi` also read the snake_case name of a hand-built dict
+  (one shared `utils.meta_get` replaces two private copies). The JSON tool contract was
+  not affected.
 - **`analyze_incremental(exclude_collections=...)` no longer re-analyzes every run.**
   The change state was compared with the exclusion, but the result stored fingerprints
   without it: a full re-analysis kept whole-database fingerprints, and
@@ -85,6 +100,10 @@ analysis already uses a key now reserved for mapping ids (see below).
   read when the conceptual schema gives none. arango-query-core's supertypes are counted
   too: `MULTI_LABEL` by its label, like `LABELS`, and `UNION` as the sum of its members
   (`members`, else the conceptual `subtypes`), not as a whole collection.
+- **`run_tool` keeps a `reviewThreshold` or `cacheTtlSeconds` of 0.** Both were read as
+  `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
+  threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
+  expire at once.
 
 ## 0.20.0 — 2026-11-16
 
