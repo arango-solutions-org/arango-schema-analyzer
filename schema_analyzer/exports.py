@@ -5,7 +5,13 @@ from typing import TYPE_CHECKING, Any
 from .defaults import DEFAULT_OWL_BASE_IRI, DEFAULT_OWL_PHYSICAL_IRI
 from .errors import SchemaAnalyzerError
 from .mapping import PhysicalMapping
-from .owl_export import _sanitize_iri_local
+from .owl_export import (
+    _W3C_PREFIXES,
+    _mapped_schema,
+    _property_multi_valued,
+    _property_path,
+    _sanitize_iri_local,
+)
 from .utils import normalize_analysis_dict
 
 if TYPE_CHECKING:
@@ -35,23 +41,6 @@ def _physical_block(mapping: Any, keys: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(mapping, dict):
         return {}
     return {k: mapping[k] for k in keys if k in mapping and mapping[k] is not None}
-
-
-def _property_path(mapping: Any, prop: str) -> list[str] | None:
-    """The ``path`` of *prop* in an entity mapping, or ``None`` when it has none."""
-    props = mapping.get("properties") if isinstance(mapping, dict) else None
-    spec = props.get(prop) if isinstance(props, dict) else None
-    path = spec.get("path") if isinstance(spec, dict) else None
-    if isinstance(path, list) and path and all(isinstance(seg, str) for seg in path):
-        return list(path)
-    return None
-
-
-def _property_multi_valued(mapping: Any, prop: str) -> bool:
-    """Whether an entity mapping marks *prop* ``multiValued`` (its attribute holds a list)."""
-    props = mapping.get("properties") if isinstance(mapping, dict) else None
-    spec = props.get(prop) if isinstance(props, dict) else None
-    return isinstance(spec, dict) and spec.get("multiValued") is True
 
 
 def export_mapping(analysis: AnalysisResult | dict[str, Any], target: str = "cypher") -> dict[str, Any]:
@@ -90,21 +79,10 @@ def _export_sparql(
     base_iri: str = DEFAULT_OWL_BASE_IRI,
     phys_iri: str = DEFAULT_OWL_PHYSICAL_IRI,
 ) -> dict[str, Any]:
-    cs = data.get("conceptualSchema") or {}
-    pm = data.get("physicalMapping") or {}
-    raw_entities = cs.get("entities")
-    entities = raw_entities if isinstance(raw_entities, list) else []
-    raw_rels = cs.get("relationships")
-    rels = raw_rels if isinstance(raw_rels, list) else []
-    raw_pm_entities = pm.get("entities")
-    pm_entities = raw_pm_entities if isinstance(raw_pm_entities, dict) else {}
-    raw_pm_rels = pm.get("relationships")
-    pm_rels = raw_pm_rels if isinstance(raw_pm_rels, dict) else {}
+    entities, rels, pm_entities, pm_rels = _mapped_schema(data)
 
     classes: list[dict[str, Any]] = []
     for e in entities:
-        if not isinstance(e, dict) or not isinstance(e.get("name"), str) or not e["name"]:
-            continue
         name = e["name"]
         local = _sanitize_iri_local(name)
         classes.append(
@@ -123,8 +101,6 @@ def _export_sparql(
     # with distinct domains (the RDF "property reused across classes" case).
     datatype_properties: list[dict[str, Any]] = []
     for e in entities:
-        if not isinstance(e, dict) or not isinstance(e.get("name"), str) or not e["name"]:
-            continue
         name = e["name"]
         domain_iri = f"{base_iri}{_sanitize_iri_local(name)}"
         phys = _physical_block(pm_entities.get(name), _ENTITY_RESOLUTION_KEYS)
@@ -156,8 +132,6 @@ def _export_sparql(
 
     object_properties: list[dict[str, Any]] = []
     for r in rels:
-        if not isinstance(r, dict) or not isinstance(r.get("type"), str) or not r["type"]:
-            continue
         rtype = r["type"]
         local = _sanitize_iri_local(rtype)
         entry: dict[str, Any] = {
@@ -179,15 +153,12 @@ def _export_sparql(
         "prefixes": {
             "": base_iri,
             "phys": phys_iri,
-            "owl": "http://www.w3.org/2002/07/owl#",
-            "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-            "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-            "xsd": "http://www.w3.org/2001/XMLSchema#",
+            **_W3C_PREFIXES,
         },
         "classes": classes,
         "objectProperties": object_properties,
         "datatypeProperties": datatype_properties,
-        "physicalMapping": pm,
+        "physicalMapping": data.get("physicalMapping") or {},
     }
 
 

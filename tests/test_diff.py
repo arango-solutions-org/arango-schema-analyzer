@@ -95,3 +95,18 @@ def test_diff_health_score_delta_none_when_missing():
     curr = _analysis([{"name": "User"}], [], {}, {}, health=85)
     d = diff_analyses(prev, curr)
     assert d["healthScore"]["delta"] is None
+
+
+def test_diff_sees_property_changes_in_every_property_shape():
+    """``properties`` as bare names or a dict keyed by name (``utils.entity_property_names``)."""
+    for before, after in (
+        (["email"], ["email", "phone"]),
+        ({"email": {}}, {"email": {}, "phone": {}}),
+    ):
+        prev = _analysis([{"name": "User", "properties": before}], [], {}, {})
+        curr = _analysis([{"name": "User", "properties": after}], [], {}, {})
+        d = diff_analyses(prev, curr)
+        assert d["entities"]["changed"] == ["User"], before
+        assert d["changed"] is True
+    same = _analysis([{"name": "User", "properties": ["email"]}], [], {}, {})
+    assert diff_analyses(same, same)["changed"] is False

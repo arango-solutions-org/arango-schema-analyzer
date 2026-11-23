@@ -213,3 +213,21 @@ def test_serve_remote_warns_without_token(monkeypatch, caplog):
     assert served["ran"] == ("0.0.0.0", 8000)
     assert "auth" not in served  # no token => no auth middleware installed
     assert any("no auth token" in r.message for r in caplog.records)
+
+
+def test_run_json_error_envelopes_keep_their_exact_shape():
+    pytest.importorskip("mcp")
+    import json
+
+    from schema_analyzer.mcp_server import build_app
+
+    run_json = build_app()._tool_manager.get_tool("arangodb_schema_analyzer_run_json").fn
+    assert json.dumps(run_json("[1]")) == (
+        '{"contractVersion": "1", "operation": null, "ok": false, '
+        '"error": {"code": "INVALID_REQUEST", "message": "request_json must be a JSON object"}}'
+    )
+    resp = run_json("{not json")
+    assert list(resp) == ["contractVersion", "operation", "ok", "error"]
+    assert resp["operation"] is None
+    assert resp["error"]["code"] == "INVALID_REQUEST"
+    assert resp["error"]["message"].startswith("Invalid JSON: ")

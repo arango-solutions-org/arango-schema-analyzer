@@ -163,3 +163,77 @@ def test_run_tool_keeps_a_zero_review_threshold_and_cache_ttl(monkeypatch):
     assert tool_mod.run_tool(zero)["ok"] is True
     assert tool_mod.run_tool(dict(_BASE_ANALYZE))["ok"] is True
     assert seen == [(0.0, 0), (0.6, 86400)]
+
+
+_MINIMAL_ANALYSIS = {
+    "conceptualSchema": {"entities": [], "relationships": [], "properties": []},
+    "physicalMapping": {"entities": {}, "relationships": {}},
+    "metadata": {
+        "confidence": 1.0,
+        "timestamp": "t",
+        "analyzedCollectionCounts": {"documentCollections": 0, "edgeCollections": 0},
+        "detectedPatterns": [],
+    },
+}
+
+
+def _docs_request(req_id=None):
+    req = {"contractVersion": "1", "operation": "docs", "input": {"analysis": _MINIMAL_ANALYSIS}}
+    if req_id:
+        req["requestId"] = req_id
+    return req
+
+
+def test_error_envelopes_keep_their_exact_shape(monkeypatch):
+    """Byte-identical to the envelopes run_tool hand-built before ``_error_response``:
+    same keys, same order, ``requestId`` last and only when the request carried one."""
+    import json
+
+    import schema_analyzer.tool as tool
+    from schema_analyzer.errors import SchemaAnalyzerError
+
+    def raise_(exc):
+        def _raise(*_a, **_k):
+            raise exc
+
+        return _raise
+
+    monkeypatch.setattr(tool, "generate_schema_docs", raise_(SchemaAnalyzerError("bad", code="INVALID_ARGUMENT")))
+    assert json.dumps(tool.run_tool(_docs_request("r2"))) == (
+        '{"contractVersion": "1", "operation": "docs", "ok": false, '
+        '"error": {"code": "INVALID_ARGUMENT", "message": "bad"}, "requestId": "r2"}'
+    )
+    monkeypatch.setattr(tool, "generate_schema_docs", raise_(SchemaAnalyzerError("bad", code=None)))
+    assert json.dumps(tool.run_tool(_docs_request())) == (
+        '{"contractVersion": "1", "operation": "docs", "ok": false, "error": {"code": "ERROR", "message": "bad"}}'
+    )
+    monkeypatch.setattr(tool, "generate_schema_docs", raise_(RuntimeError("secret detail")))
+    assert json.dumps(tool.run_tool(_docs_request("r3"))) == (
+        '{"contractVersion": "1", "operation": "docs", "ok": false, "error": {"code": "INTERNAL_ERROR", '
+        '"message": "An internal error occurred. Check server logs for details."}, "requestId": "r3"}'
+    )
+    # A request that fails validation echoes its raw requestId, None included, before ``ok``.
+    assert json.dumps(tool.run_tool({"contractVersion": "1", "operation": "docs"})) == (
+        '{"contractVersion": "1", "operation": "docs", "requestId": null, "ok": false, '
+        '"error": {"code": "INVALID_REQUEST", "message": "\'input\' is a required property"}}'
+    )
+
+
+def test_unknown_entity_strategy_is_rejected_by_the_request_schema():
+    from schema_analyzer.tool import run_tool
+
+    resp = run_tool(
+        {
+            "contractVersion": "1",
+            "operation": "analyze",
+            "connection": {"url": "http://localhost:8529", "database": "db"},
+            "analysisOptions": {"entityStrategy": "bogus"},
+        }
+    )
+    assert resp == {
+        "contractVersion": "1",
+        "operation": "analyze",
+        "requestId": None,
+        "ok": False,
+        "error": {"code": "INVALID_REQUEST", "message": "'bogus' is not one of ['auto', 'collection', 'labels']"},
+    }

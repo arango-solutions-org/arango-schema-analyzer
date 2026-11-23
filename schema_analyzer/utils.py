@@ -50,6 +50,29 @@ def entity_property_names(entity: dict[str, Any]) -> list[str]:
     return []
 
 
+def _named_items(conceptual: Any, section: str, key: str) -> list[dict[str, Any]]:
+    items = conceptual.get(section) if isinstance(conceptual, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [i for i in items if isinstance(i, dict) and isinstance(i.get(key), str) and i[key]]
+
+
+def conceptual_entities(conceptual: Any) -> list[dict[str, Any]]:
+    """The entities of a conceptual schema that are dicts with a non-empty string ``name``.
+
+    Malformed rows are dropped; order and any repeated names are kept as given.
+    """
+    return _named_items(conceptual, "entities", "name")
+
+
+def conceptual_relationships(conceptual: Any) -> list[dict[str, Any]]:
+    """The relationships of a conceptual schema that are dicts with a non-empty string ``type``.
+
+    Malformed rows are dropped; order and any repeated types are kept as given.
+    """
+    return _named_items(conceptual, "relationships", "type")
+
+
 def sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
