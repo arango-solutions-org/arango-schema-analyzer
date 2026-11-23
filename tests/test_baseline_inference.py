@@ -783,3 +783,21 @@ def test_endpoint_mirror_fields_leave_edge_collections_dedicated():
 )
 def test_singularize_is_case_insensitive(plural, singular):
     assert singularize(plural) == singular
+
+
+def test_edge_endpoints_from_graphs_first_graph_wins():
+    # One edge collection declared by two graphs with different endpoints: the
+    # lexicographically first graph supplies them (utils.index_edge_definitions_by_collection),
+    # as in the sharding profile; baseline used to take the last.
+    snapshot = _neo4j_movies_pg_snapshot()
+    snapshot["collections"] = [c for c in snapshot["collections"] if c["name"] in ("movies", "persons")] + [
+        {"name": "rated", "type": "edge", "inferred_relationship_type": "RATED", "observed_fields": {"fields": []}}
+    ]
+    snapshot["graphs_detailed"] = [
+        {"name": "g_a", "edge_definitions": [{"collection": "rated", "from": ["persons"], "to": ["movies"]}]},
+        {"name": "g_b", "edge_definitions": [{"collection": "rated", "from": ["movies"], "to": ["persons"]}]},
+    ]
+    out = infer_baseline_from_snapshot(snapshot)
+    rels = {r["type"]: r for r in out["conceptualSchema"]["relationships"]}
+    assert rels["RATED"]["fromEntity"] == "Person"
+    assert rels["RATED"]["toEntity"] == "Movie"

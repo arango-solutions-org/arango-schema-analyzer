@@ -41,9 +41,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .utils import SYSTEM_FIELDS, collections_by_name, observed_field_names
+
 logger = logging.getLogger(__name__)
 
-_SYSTEM_FIELDS = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 _EDGE_ROOTS = ("_from", "_to")
 _ARRAY_EXPANSION_RISK = "ARRAY_EXPANSION_DUPLICATES_TRAVERSAL_ROWS"
 _ARRAY_EXPANSION_MESSAGE = (
@@ -51,32 +52,6 @@ _ARRAY_EXPANSION_MESSAGE = (
     "that selects it returns each edge once per array element. Do not hint it in "
     "traversals; it is correct only for pattern-match lookups on the edge collection."
 )
-
-
-def _observed_field_names(entry: dict[str, Any]) -> set[str]:
-    """Union of field names observed on a collection entry (PG ``fields`` or
-    LPG ``by_type`` groupings)."""
-    observed = entry.get("observed_fields")
-    names: set[str] = set()
-    if not isinstance(observed, dict):
-        return names
-    fields = observed.get("fields")
-    if isinstance(fields, list):
-        names.update(f for f in fields if isinstance(f, str))
-    by_type = observed.get("by_type")
-    if isinstance(by_type, dict):
-        for field_list in by_type.values():
-            if isinstance(field_list, list):
-                names.update(f for f in field_list if isinstance(f, str))
-    return names
-
-
-def _collections_by_name(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for c in snapshot.get("collections", []) or []:
-        if isinstance(c, dict) and isinstance(c.get("name"), str):
-            out[c["name"]] = c
-    return out
 
 
 def _index_level_vci(collection: dict[str, Any]) -> list[dict[str, Any]]:
@@ -125,7 +100,7 @@ def _denormalized_fields(
     collections: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Edge fields that also appear on an endpoint vertex collection."""
-    edge_fields = _observed_field_names(edge_entry) - _SYSTEM_FIELDS
+    edge_fields = observed_field_names(edge_entry) - SYSTEM_FIELDS
     if not edge_fields:
         return []
     endpoint_names: list[str] = []
@@ -139,7 +114,7 @@ def _denormalized_fields(
         vertex = collections.get(cname)
         if not isinstance(vertex, dict):
             continue
-        shared = (_observed_field_names(vertex) - _SYSTEM_FIELDS) & edge_fields
+        shared = (observed_field_names(vertex) - SYSTEM_FIELDS) & edge_fields
         for f in shared:
             by_field.setdefault(f, set()).add(cname)
 
@@ -163,7 +138,7 @@ def detect_vci(data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]
     if not isinstance(rels, dict) or not rels:
         return None
 
-    collections = _collections_by_name(snapshot)
+    collections = collections_by_name(snapshot)
     matched: list[str] = []
     warnings: list[dict[str, Any]] = []
 

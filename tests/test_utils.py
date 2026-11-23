@@ -1,6 +1,7 @@
 from schema_analyzer.utils import (
     analysis_cache_storage_key,
     extract_first_json_object,
+    graph_collections,
     index_edge_definitions_by_collection,
     iter_edge_definitions,
     normalize_analysis_dict,
@@ -71,6 +72,26 @@ def test_index_edge_definitions_deterministic():
     ]
     idx = index_edge_definitions_by_collection(graphs)
     assert set(idx.keys()) == {"shared", "only_a"}
+
+
+def test_index_edge_definitions_first_graph_wins_and_skips_non_dicts():
+    graphs = [
+        "not-a-graph",
+        {"name": "g_z", "edge_definitions": [{"collection": "shared", "from": ["z"], "to": []}]},
+        {"name": "g_a", "edge_definitions": [{"collection": "shared", "from": ["a"], "to": []}]},
+    ]
+    assert index_edge_definitions_by_collection(graphs)["shared"]["from"] == ["a"]
+
+
+def test_graph_collections_drops_empty_and_malformed_names():
+    graph = {
+        "edge_definitions": [
+            {"collection": "knows", "from": ["users", ""], "to": "posts"},
+            {"collection": "", "from": ["ghost"], "to": []},
+        ],
+        "orphan_collections": ["badges", "", 7],
+    }
+    assert graph_collections(graph) == ({"users", "badges"}, {"knows"})
 
 
 def test_index_edge_definitions_handles_none_and_empty():

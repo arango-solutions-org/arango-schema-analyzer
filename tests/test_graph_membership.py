@@ -167,3 +167,26 @@ def test_unknown_graph_scope_raises():
     with pytest.raises(SchemaAnalyzerError) as exc:
         snapshot_physical_schema(_ScopeFakeDB(), graph_scope="does_not_exist")
     assert exc.value.code == "INVALID_ARGUMENT"
+
+
+def test_empty_vertex_names_dropped_like_sharding_profile():
+    # Membership and the sharding profile read a graph's collections through one
+    # helper; membership used to keep an empty name the sharding profile dropped.
+    from schema_analyzer.sharding_profile import classify_sharding_profile
+
+    graph = {
+        "name": "G",
+        "edge_definitions": [{"collection": "follows", "from": ["users", ""], "to": ["posts"]}],
+        "orphan_collections": ["", "badges"],
+    }
+    snap = {
+        "collections": [{"name": n, "type": "document"} for n in ("users", "posts", "badges")]
+        + [{"name": "follows", "type": "edge"}],
+        "graphs_detailed": [graph],
+    }
+    meta = compute_graph_membership(_data(), snap)
+    profile = classify_sharding_profile(snap)
+    assert meta is not None and profile is not None
+    membership_vertices = meta["graphs"]["G"]["vertexCollections"]
+    assert membership_vertices == ["badges", "posts", "users"]
+    assert profile["graphs"][0]["vertexCollections"] == membership_vertices

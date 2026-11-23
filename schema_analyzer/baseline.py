@@ -16,7 +16,7 @@ from .type_detection import (
     _type_values_for_field,
     infer_entity_type_from_collection_name,
 )
-from .utils import iter_edge_definitions, pascal_case
+from .utils import index_edge_definitions_by_collection, pascal_case
 
 
 def _choose_type_field(col: dict[str, Any], *, is_edge: bool, max_distinct_values: int | None = None) -> str | None:
@@ -681,16 +681,10 @@ def _enrich_endpoints_from_graphs(
     if not isinstance(graphs_detailed, list):
         return
 
-    edge_def_map: dict[str, dict[str, list[str]]] = {}
-    for g in graphs_detailed:
-        if not isinstance(g, dict):
-            continue
-        for edef in iter_edge_definitions(g):
-            ec = edef["collection"]
-            edge_def_map[ec] = {
-                "from_collections": edef.get("from") or [],
-                "to_collections": edef.get("to") or [],
-            }
+    edge_def_map: dict[str, dict[str, list[str]]] = {
+        ec: {"from_collections": edef.get("from") or [], "to_collections": edef.get("to") or []}
+        for ec, edef in index_edge_definitions_by_collection(graphs_detailed).items()
+    }
 
     for col in collections:
         if not isinstance(col, dict) or col.get("type") != "edge":

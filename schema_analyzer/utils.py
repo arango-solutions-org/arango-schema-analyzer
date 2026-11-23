@@ -7,6 +7,9 @@ from typing import Any
 
 _AQL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+#: ArangoDB's system attributes, which no schema property maps to.
+SYSTEM_FIELDS = frozenset({"_key", "_id", "_rev", "_from", "_to"})
+
 
 def assert_aql_identifier(name: str, value: str) -> None:
     if not isinstance(value, str) or not _AQL_IDENT_RE.match(value):
@@ -109,6 +112,27 @@ def iter_edge_definitions(graph: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def graph_collections(graph: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """``(vertex collections, edge collections)`` of a snapshot graph entry.
+
+    Vertices are every edge definition's ``from`` / ``to`` plus the orphan
+    collections; edges are the edge definitions' collections. Non-string and
+    empty names are dropped on both sides.
+    """
+    vertices: set[str] = set()
+    edges: set[str] = set()
+    for ed in iter_edge_definitions(graph):
+        edges.add(str(ed["collection"]))
+        for side in ("from", "to"):
+            vals = ed.get(side)
+            if isinstance(vals, list):
+                vertices.update(v for v in vals if isinstance(v, str) and v)
+    orphans = graph.get("orphan_collections")
+    if isinstance(orphans, list):
+        vertices.update(v for v in orphans if isinstance(v, str) and v)
+    return vertices, edges
+
+
 def index_edge_definitions_by_collection(
     graphs: list[dict[str, Any]] | None,
 ) -> dict[str, dict[str, Any]]:
@@ -116,18 +140,44 @@ def index_edge_definitions_by_collection(
     over every named graph in ``graphs``.
 
     When two graphs declare the same edge collection the
-    lexicographically first graph name wins (callers that rely on this
-    determinism include sharding-profile classification and baseline
-    endpoint enrichment).
+    lexicographically first graph name wins (baseline endpoint
+    enrichment relies on this determinism).
     """
     out: dict[str, dict[str, Any]] = {}
     if not graphs:
         return out
-    for g in sorted(graphs, key=lambda x: str(x.get("name") or "")):
-        if not isinstance(g, dict):
-            continue
+    dicts = [g for g in graphs if isinstance(g, dict)]
+    for g in sorted(dicts, key=lambda x: str(x.get("name") or "")):
         for ed in iter_edge_definitions(g):
             out.setdefault(str(ed["collection"]), ed)
+    return out
+
+
+def observed_field_names(entry: dict[str, Any]) -> set[str]:
+    """Union of field names observed on a snapshot collection entry (PG
+    ``fields`` or LPG ``by_type`` groupings)."""
+    observed = entry.get("observed_fields")
+    names: set[str] = set()
+    if not isinstance(observed, dict):
+        return names
+    fields = observed.get("fields")
+    if isinstance(fields, list):
+        names.update(f for f in fields if isinstance(f, str))
+    by_type = observed.get("by_type")
+    if isinstance(by_type, dict):
+        for field_list in by_type.values():
+            if isinstance(field_list, list):
+                names.update(f for f in field_list if isinstance(f, str))
+    return names
+
+
+def collections_by_name(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The snapshot's collection entries keyed by name (entries without a
+    string name are skipped)."""
+    out: dict[str, dict[str, Any]] = {}
+    for c in snapshot.get("collections") or []:
+        if isinstance(c, dict) and isinstance(c.get("name"), str):
+            out[c["name"]] = c
     return out
 
 

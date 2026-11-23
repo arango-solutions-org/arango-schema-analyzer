@@ -48,7 +48,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from .utils import iter_edge_definitions
+from .utils import graph_collections
 
 logger = logging.getLogger(__name__)
 
@@ -137,17 +137,7 @@ def _graph_evidence(
     if not isinstance(name, str) or not name:
         return None
 
-    vertex_cols: set[str] = set()
-    edge_cols: set[str] = set()
-    for ed in iter_edge_definitions(graph_entry):
-        edge_cols.add(str(ed["collection"]))
-        for bucket in ("from", "to"):
-            for v in ed.get(bucket) or []:
-                if isinstance(v, str) and v:
-                    vertex_cols.add(v)
-    for oc in graph_entry.get("orphan_collections") or []:
-        if isinstance(oc, str) and oc:
-            vertex_cols.add(oc)
+    vertex_cols, edge_cols = graph_collections(graph_entry)
 
     ev: dict[str, Any] = {
         "name": name,
@@ -214,15 +204,9 @@ def _graph_membership_index(
         name = g.get("name")
         if not isinstance(name, str) or not name:
             continue
-        for ed in iter_edge_definitions(g):
-            out.setdefault(str(ed["collection"]), name)
-            for bucket in ("from", "to"):
-                for v in ed.get(bucket) or []:
-                    if isinstance(v, str) and v:
-                        out.setdefault(v, name)
-        for oc in g.get("orphan_collections") or []:
-            if isinstance(oc, str) and oc:
-                out.setdefault(oc, name)
+        vertices, edges = graph_collections(g)
+        for col in vertices | edges:
+            out.setdefault(col, name)
     return out
 
 

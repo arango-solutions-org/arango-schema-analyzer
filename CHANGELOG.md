@@ -116,6 +116,11 @@ analysis already uses a key now reserved for mapping ids (see below).
   `metadata.statistics` now counts every `LABEL` / `LABELS` / `MULTI_LABEL` entity over
   the same filter, so the two can no longer disagree. A `LABEL` entity with an empty
   `typeValue` is now left uncounted (status `partial`) instead of counted.
+- **Named-graph collections are read one way everywhere.** When one edge collection is
+  declared in two named graphs with different endpoints, baseline inference now takes
+  the endpoints from the first graph by name, as the sharding profile already did (it
+  took the last). An empty collection name in a graph definition is ignored by graph
+  membership and graph scoping, as the sharding profile already ignored it.
 
 ## 0.20.0 — 2026-11-16
 
