@@ -38,11 +38,10 @@ from .type_detection import (
     infer_entity_type_from_collection_name,
     infer_relationship_type_from_collection_name,
 )
-from .utils import iter_edge_definitions, sha256_hex, stable_dumps
+from .utils import SYSTEM_FIELDS, graph_collections, sha256_hex, stable_dumps
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_FIELDS = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 _PROPERTY_SAMPLE_LIMIT = 10
 
 
@@ -294,7 +293,7 @@ def _detect_observed_fields(
     Either way, ``list_fields`` names the top-level attributes the sample holds as a
     list of scalars (:mod:`.list_values`), written only when there is one.
     """
-    exclude = set(_SYSTEM_FIELDS)
+    exclude = set(SYSTEM_FIELDS)
     if type_field:
         exclude.add(type_field)
         exclude.add("labels")
@@ -934,18 +933,8 @@ def _graph_scope_collections(db: StandardDatabase, graph_name: str) -> set[str]:
             code="INVALID_ARGUMENT",
             cause=e,
         ) from e
-    summary = _summarize_graph_props(props)
-    cols: set[str] = set()
-    for ed in iter_edge_definitions(summary):
-        cols.add(str(ed["collection"]))
-        for side in ("from", "to"):
-            vals = ed.get(side)
-            if isinstance(vals, list):
-                cols.update(v for v in vals if isinstance(v, str))
-    orphans = summary.get("orphan_collections")
-    if isinstance(orphans, list):
-        cols.update(v for v in orphans if isinstance(v, str))
-    return cols
+    vertices, edges = graph_collections(_summarize_graph_props(props))
+    return vertices | edges
 
 
 def snapshot_physical_schema(
