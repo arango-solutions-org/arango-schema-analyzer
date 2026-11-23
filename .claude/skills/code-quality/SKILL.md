@@ -134,8 +134,8 @@ positive examples, then anything checked and deliberately left alone.
 (Append one entry per audit: date, what was found, what was fixed and where.)
 
 - **2026-11-23, first whole-repo audit** (main at `c2fd34b` + this skill; three
-  parallel reviewers, every finding below re-confirmed by command). Nothing fixed
-  yet. Duplications that have already changed behaviour:
+  parallel reviewers, every finding below re-confirmed by command). The first four
+  were fixed the same day (next entry). Duplications that have already changed behaviour:
   - `analyzer.py`'s no-LLM path (`_prepare_analysis`) copies `_build_result`'s
     enrichment list and lacks `_apply_tenant_scope`, so the default path returns
     no `tenantScope` / `tenantScopeReport`.
@@ -159,3 +159,21 @@ positive examples, then anything checked and deliberately left alone.
   when samples aren't kept; `_observed_field_names` ×3 (vci, graphrag,
   rdf_topology); graph vertex/edge sets built four ways; `quality.py`'s gold
   scorer mirrors `eval/scoring.py`; the dead `entityStrategy` check in `tool.py`.
+- **2026-11-23, fixed the four behaviour-changing findings**, each with a
+  regression test that fails without the fix:
+  - No-LLM tenant scope (#58): the three copies of the enrichment-pass list are one
+    `analyzer._apply_snapshot_passes`, called by the no-LLM, LLM and fallback
+    paths; the individual `_apply_*` stay re-exported from `analyzer`.
+  - Model metadata keys (#59): `normalize_analysis_dict` dumps a model by alias
+    (camelCase, the contract shape), and one `utils.meta_get` replaces the two
+    `_meta_get` copies, so a hand-built snake_case dict is still read.
+  - Zero-valued options (#60): `reviewThreshold` / `cacheTtlSeconds` use
+    `.get(key, DEFAULT)`.
+  - Incremental fingerprints (#61): the full re-analysis branch had the same bug as
+    `refresh_statistics`; both now keep the `exclude_collections` fingerprints the
+    change state was compared with. Closed drift gap REQ-058 (#58 closed REQ-089).
+  Still open from the first audit: the OWL annotation lists (JSON-LD drops a
+  relationship's `typeField` / `typeValue`; `observedCardinality` undeclared),
+  `statistics.py` re-dispatching on style instead of `aql_entity_match`
+  (`MULTI_LABEL` disagreement), the unused `utils.index_edge_definitions_by_collection`,
+  and the lower-reach items listed above.
