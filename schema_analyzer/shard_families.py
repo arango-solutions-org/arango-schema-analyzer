@@ -63,16 +63,6 @@ from .utils import entity_property_names, sha256_hex
 logger = logging.getLogger(__name__)
 
 
-def _entity_property_names(entity: dict[str, Any]) -> list[str]:
-    """Return the **sorted** property-name list for an entity mapping.
-
-    Thin wrapper over :func:`schema_analyzer.utils.entity_property_names`
-    that imposes the sort order required by shard-family bucketing
-    (the bucket key is ``hash(sorted(properties))``).
-    """
-    return sorted(entity_property_names(entity))
-
-
 def _has_field(entity: dict[str, Any], field: str) -> bool:
     """Case-insensitive check: does the entity mapping declare ``field``?"""
     target = field.lower()
@@ -208,7 +198,8 @@ def detect_shard_families(
     for ent_name, ent_data in entities.items():
         if not isinstance(ent_data, dict):
             continue
-        prop_names = _entity_property_names(ent_data)
+        # Sorted: the bucket key is a hash of the sorted property names.
+        prop_names = sorted(entity_property_names(ent_data))
         if not prop_names:
             continue
         bucket_key = _bucket_hash(prop_names)
