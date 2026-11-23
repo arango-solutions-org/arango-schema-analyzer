@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .utils import normalize_analysis_dict
+from .utils import meta_get, normalize_analysis_dict
 
 
 def _entities_by_name(conceptual: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -146,5 +146,5 @@ def _health_score(analysis: dict[str, Any]) -> int | None:
     meta = analysis.get("metadata")
     if not isinstance(meta, dict):
         return None
-    score = meta.get("healthScore")
+    score = meta_get(meta, "healthScore", "health_score")
     return int(score) if isinstance(score, (int, float)) else None
