@@ -16,23 +16,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .utils import meta_get, normalize_analysis_dict
-
-
-def _entities_by_name(conceptual: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for e in conceptual.get("entities", []) or []:
-        if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"]:
-            out[e["name"]] = e
-    return out
-
-
-def _relationships_by_type(conceptual: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for r in conceptual.get("relationships", []) or []:
-        if isinstance(r, dict) and isinstance(r.get("type"), str) and r["type"]:
-            out[r["type"]] = r
-    return out
+from .utils import (
+    conceptual_entities,
+    conceptual_relationships,
+    entity_property_names,
+    meta_get,
+    normalize_analysis_dict,
+)
 
 
 def _mapping_entries(physical_mapping: dict[str, Any], key: str) -> dict[str, dict[str, Any]]:
@@ -40,16 +30,6 @@ def _mapping_entries(physical_mapping: dict[str, Any], key: str) -> dict[str, di
     if not isinstance(entries, dict):
         return {}
     return {k: v for k, v in entries.items() if isinstance(v, dict)}
-
-
-def _entity_property_names(entity: dict[str, Any]) -> set[str]:
-    props = entity.get("properties")
-    names: set[str] = set()
-    if isinstance(props, list):
-        for p in props:
-            if isinstance(p, dict) and isinstance(p.get("name"), str):
-                names.add(p["name"])
-    return names
 
 
 def _style_changes(prev: dict[str, dict[str, Any]], curr: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -86,16 +66,16 @@ def diff_analyses(
     prev_pm = prev.get("physicalMapping") or {}
     curr_pm = curr.get("physicalMapping") or {}
 
-    prev_entities = _entities_by_name(prev_cs)
-    curr_entities = _entities_by_name(curr_cs)
+    prev_entities = {e["name"]: e for e in conceptual_entities(prev_cs)}
+    curr_entities = {e["name"]: e for e in conceptual_entities(curr_cs)}
     ent_added, ent_removed = _added_removed(set(prev_entities), set(curr_entities))
     ent_changed: list[str] = []
     for name in sorted(set(prev_entities) & set(curr_entities)):
-        if _entity_property_names(prev_entities[name]) != _entity_property_names(curr_entities[name]):
+        if set(entity_property_names(prev_entities[name])) != set(entity_property_names(curr_entities[name])):
             ent_changed.append(name)
 
-    prev_rels = _relationships_by_type(prev_cs)
-    curr_rels = _relationships_by_type(curr_cs)
+    prev_rels = {r["type"]: r for r in conceptual_relationships(prev_cs)}
+    curr_rels = {r["type"]: r for r in conceptual_relationships(curr_cs)}
     rel_added, rel_removed = _added_removed(set(prev_rels), set(curr_rels))
     rel_changed: list[str] = []
     for rtype in sorted(set(prev_rels) & set(curr_rels)):
