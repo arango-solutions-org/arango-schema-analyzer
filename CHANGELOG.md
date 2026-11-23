@@ -84,6 +84,10 @@ analysis already uses a key now reserved for mapping ids (see below).
   read when the conceptual schema gives none. arango-query-core's supertypes are counted
   too: `MULTI_LABEL` by its label, like `LABELS`, and `UNION` as the sum of its members
   (`members`, else the conceptual `subtypes`), not as a whole collection.
+- **`run_tool` keeps a `reviewThreshold` or `cacheTtlSeconds` of 0.** Both were read as
+  `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
+  threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
+  expire at once.
 
 ## 0.20.0 — 2026-11-16
 

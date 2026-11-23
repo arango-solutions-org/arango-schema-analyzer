@@ -139,3 +139,27 @@ def test_run_tool_rejects_malformed_previous_analysis():
     resp = run_tool({**_BASE_ANALYZE, "input": {"previousAnalysis": "not-an-object"}})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_run_tool_keeps_a_zero_review_threshold_and_cache_ttl(monkeypatch):
+    """0 is a valid ``reviewThreshold`` and ``cacheTtlSeconds``; it used to become the default."""
+    import schema_analyzer.tool as tool_mod
+    from schema_analyzer.analyzer import AgenticSchemaAnalyzer
+
+    monkeypatch.setattr(tool_mod, "_connect_db", lambda conn: object())
+    monkeypatch.setattr(
+        tool_mod, "snapshot_physical_schema", lambda *a, **k: {"version": 1, "collections": [], "graphs": []}
+    )
+    seen: list[tuple[float, int]] = []
+    real_init = AgenticSchemaAnalyzer.__init__
+
+    def _spy_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        seen.append((self.review_threshold, self.cache_ttl_seconds))
+
+    monkeypatch.setattr(AgenticSchemaAnalyzer, "__init__", _spy_init)
+
+    zero = {**_BASE_ANALYZE, "analysisOptions": {"reviewThreshold": 0, "cacheTtlSeconds": 0}}
+    assert tool_mod.run_tool(zero)["ok"] is True
+    assert tool_mod.run_tool(dict(_BASE_ANALYZE))["ok"] is True
+    assert seen == [(0.0, 0), (0.6, 86400)]
