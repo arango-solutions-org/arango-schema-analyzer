@@ -152,6 +152,30 @@ def _tooling_block(
     return tooling
 
 
+def _error_response(*, op: str | None, code: str, message: str, req_id: str | None = None) -> dict[str, Any]:
+    """The contract's ``ok: false`` envelope; ``requestId`` is echoed only when the request carried one."""
+    resp: dict[str, Any] = {
+        "contractVersion": CONTRACT_VERSION,
+        "operation": op,
+        "ok": False,
+        "error": {"code": code, "message": message},
+    }
+    if req_id:
+        resp["requestId"] = req_id
+    return resp
+
+
+def _snapshot_kwargs(analysis_options: dict[str, Any]) -> dict[str, Any]:
+    """``snapshot_physical_schema`` options, shared by the ``snapshot`` and ``analyze`` operations."""
+    raw_graph_scope = analysis_options.get("graphScope")
+    return {
+        "sample_limit_per_collection": int(analysis_options.get("sampleLimitPerCollection") or 0),
+        "include_samples_in_snapshot": bool(analysis_options.get("includeSamplesInSnapshot") or False),
+        "graph_scope": raw_graph_scope if isinstance(raw_graph_scope, str) and raw_graph_scope else None,
+        "nested_field_depth": int(analysis_options.get("nestedFieldDepth") or 0),
+    }
+
+
 def _build_response(
     *,
     op: str,
@@ -180,6 +204,8 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
     """
     errors = validate_request_v1(request)
     if errors:
+        # Not ``_error_response``: the request failed validation, so its raw
+        # ``requestId`` is echoed as sent (``None`` included), not only when valid.
         return {
             "contractVersion": CONTRACT_VERSION,
             "operation": request.get("operation"),
@@ -206,14 +232,7 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
         include_snapshot_fingerprint = bool(output_options.get("includeSnapshotFingerprint", True))
 
         if op == "snapshot":
-            snap_graph_scope = analysis_options.get("graphScope")
-            snapshot = snapshot_physical_schema(
-                db,
-                sample_limit_per_collection=int(analysis_options.get("sampleLimitPerCollection") or 0),
-                include_samples_in_snapshot=bool(analysis_options.get("includeSamplesInSnapshot") or False),
-                graph_scope=snap_graph_scope if isinstance(snap_graph_scope, str) and snap_graph_scope else None,
-                nested_field_depth=int(analysis_options.get("nestedFieldDepth") or 0),
-            )
+            snapshot = snapshot_physical_schema(db, **_snapshot_kwargs(analysis_options))
             return _build_response(
                 op=op,
                 req_id=req_id,
@@ -254,29 +273,8 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
                 domain_context=domain_context,
             )
 
-            include_samples = bool(analysis_options.get("includeSamplesInSnapshot") or False)
-            sample_limit = int(analysis_options.get("sampleLimitPerCollection") or 0)
-            raw_graph_scope = analysis_options.get("graphScope")
-            graph_scope = raw_graph_scope if isinstance(raw_graph_scope, str) and raw_graph_scope else None
+            snapshot = snapshot_physical_schema(db, **_snapshot_kwargs(analysis_options))
 
-            snapshot = snapshot_physical_schema(
-                db,
-                sample_limit_per_collection=sample_limit,
-                include_samples_in_snapshot=include_samples,
-                graph_scope=graph_scope,
-                nested_field_depth=int(analysis_options.get("nestedFieldDepth") or 0),
-            )
-
-            raw_strategy = analysis_options.get("entityStrategy")
-            if raw_strategy is not None and raw_strategy not in ("auto", "collection", "labels"):
-                return {
-                    "ok": False,
-                    "error": {
-                        "code": "INVALID_REQUEST",
-                        "message": "analysisOptions.entityStrategy must be 'auto', 'collection' or "
-                        f"'labels', got {raw_strategy!r}",
-                    },
-                }
             # Relational-pattern and taxonomy enrichment (PRD §6.2 / §6.3). Both default
             # off: candidate generation is snapshot-only, but the confirming probes are
             # cross-collection database costs and a caller should opt into paying them.
@@ -300,10 +298,11 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
 
             analyze_kwargs: dict[str, Any] = {
                 "timeout_ms": int(analysis_options.get("timeoutMs") or DEFAULT_TIMEOUT_MS),
-                "sample_limit_per_collection": sample_limit,
-                "include_samples_in_snapshot": include_samples,
                 "use_cache": bool(analysis_options.get("useCache", True)),
-                "entity_strategy": raw_strategy or "auto",
+                # The request schema's enum has already rejected any other value.
+                "entity_strategy": analysis_options.get("entityStrategy") or "auto",
+                # Sampling options are not repeated here: ``_snapshot`` is always passed,
+                # so the analyzer never takes its own snapshot.
                 "_snapshot": snapshot,
             }
             if prior_run:
@@ -409,26 +408,12 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
 
     except SchemaAnalyzerError as e:
         logger.warning("Operation %s failed: [%s] %s", op, e.code, e)
-        resp: dict[str, Any] = {
-            "contractVersion": CONTRACT_VERSION,
-            "operation": op,
-            "ok": False,
-            "error": {"code": e.code or "ERROR", "message": str(e)},
-        }
-        if req_id:
-            resp["requestId"] = req_id
-        return resp
+        return _error_response(op=op, code=e.code or "ERROR", message=str(e), req_id=req_id)
     except Exception:
         logger.exception("Unexpected error during operation %s", op)
-        resp = {
-            "contractVersion": CONTRACT_VERSION,
-            "operation": op,
-            "ok": False,
-            "error": {
-                "code": "INTERNAL_ERROR",
-                "message": "An internal error occurred. Check server logs for details.",
-            },
-        }
-        if req_id:
-            resp["requestId"] = req_id
-        return resp
+        return _error_response(
+            op=op,
+            code="INTERNAL_ERROR",
+            message="An internal error occurred. Check server logs for details.",
+            req_id=req_id,
+        )

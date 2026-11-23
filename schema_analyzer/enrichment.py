@@ -45,15 +45,13 @@ def _metadata(data: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
-def _arango_product_dict_for(snapshot: dict) -> dict | None:
-    """Return the arango_product metadata block for a snapshot."""
+def _arango_product_for(snapshot: dict) -> tuple[dict | None, str]:
+    """The ``(arango_product, arango_product_status)`` metadata pair for a snapshot:
+    the report block and ``'ok'`` when any product is detected, ``(None, 'none')`` otherwise."""
     report = detect_arango_products(snapshot)
-    return report.to_dict() if not report.is_empty else None
-
-
-def _arango_product_status_for(snapshot: dict) -> str:
-    """'ok' when any product detected, 'none' otherwise."""
-    return "ok" if not detect_arango_products(snapshot).is_empty else "none"
+    if report.is_empty:
+        return None, "none"
+    return report.to_dict(), "ok"
 
 
 def _apply_collection_name_allowlist(
