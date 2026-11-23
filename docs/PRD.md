@@ -225,13 +225,13 @@ Operations: `analyze`, `snapshot`, `export` (targets `cypher` | `sparql`), `docs
 
 All requests and responses are validated against the JSON Schema. Failures return structured `{ "ok": false, "error": { "code": "...", "message": "..." } }` responses for both expected errors (`SchemaAnalyzerError`) and unexpected exceptions.
 
-Requests carry an `analysisOptions` object (defined in `request.schema.json`). Among
-its fields, `analysisOptions.entityStrategy` (`"auto"` | `"collection"`, default
-`"auto"`) exposes the §3.4 discriminator override at the tool boundary: `"collection"`
-maps one entity per document collection and one relationship per edge collection,
-skipping discriminator inference. `tool.py` validates the value and returns
-`{ "ok": false, "error": { "code": "INVALID_REQUEST" } }` for any other value before
-analysis runs.
+Requests carry an `analysisOptions` object (defined in `request.schema.json`). Among its
+fields, `analysisOptions.entityStrategy` (`"auto"` | `"collection"` | `"labels"`,
+default `"auto"`) exposes the §3.4 discriminator override at the tool boundary:
+`"collection"` maps one entity per document collection and one relationship per edge
+collection, skipping discriminator inference, and `"labels"` maps label arrays to the
+`LABELS` style (§3.3). The request schema’s enum rejects any other value, so `run_tool`
+returns `{ "ok": false, "error": { "code": "INVALID_REQUEST" } }` before analysis runs.
 
 `analysisOptions.detectForeignKeys` (boolean, default `false`) turns on inference of
 relationships carried by scalar reference attributes (document-modelled foreign keys),
@@ -513,7 +513,7 @@ Tunable defaults are centralized in `defaults.py`:
 
 #### **4.7. Tool contract fidelity**
 
-Fields in `docs/tool-contract/v1/request.schema.json` **must either be implemented** in `tool.py` / `AgenticSchemaAnalyzer` **or be explicitly marked deferred** in this PRD and in schema descriptions. Implemented: **`connection.verifyTls`** (maps to python-arango `verify_override`), **`analysisOptions.maxRepairAttempts`**, **`llm.systemPrompt`**, **`llm.promptVersion`** (participates in LLM cache key with the effective system prompt), **`domainContext`** (caller-supplied domain priors → `AgenticSchemaAnalyzer.domain_context`), **`analysisOptions.entityStrategy`** (`auto` | `collection`, validated in `tool.py` → `analyze_physical_schema(entity_strategy=…)`; see §3.4/§3.8), **`analysisOptions.detectForeignKeys`** / **`analysisOptions.sampleForeignKeyOverlap`** (booleans → `AgenticSchemaAnalyzer.detect_foreign_keys` / `sample_fk_overlap`; see §3.8/§6.2), **`input.previousAnalysis`** (the pre-existing shared field, also required by `diff`, → `analyze_incremental`; the contract path to §3.13.5 fingerprint-continuity valid time; `--prior-run FILE` on the CLI), and redaction modes (`analysisOptions.redaction`). Drift between schema and code undermines agent workflows that rely on the contract — e.g. these two FK options were read by `tool.py` but absent from the schema, so with `additionalProperties: false` a request setting them was rejected at validation and the feature was unreachable through the contract until the schema declared them.
+Fields in `docs/tool-contract/v1/request.schema.json` **must either be implemented** in `tool.py` / `AgenticSchemaAnalyzer` **or be explicitly marked deferred** in this PRD and in schema descriptions. Implemented: **`connection.verifyTls`** (maps to python-arango `verify_override`), **`analysisOptions.maxRepairAttempts`**, **`llm.systemPrompt`**, **`llm.promptVersion`** (participates in LLM cache key with the effective system prompt), **`domainContext`** (caller-supplied domain priors → `AgenticSchemaAnalyzer.domain_context`), **`analysisOptions.entityStrategy`** (`auto` | `collection` | `labels`, validated by the request schema in `tool.py` → `analyze_physical_schema(entity_strategy=…)`; see §3.4/§3.8), **`analysisOptions.detectForeignKeys`** / **`analysisOptions.sampleForeignKeyOverlap`** (booleans → `AgenticSchemaAnalyzer.detect_foreign_keys` / `sample_fk_overlap`; see §3.8/§6.2), **`input.previousAnalysis`** (the pre-existing shared field, also required by `diff`, → `analyze_incremental`; the contract path to §3.13.5 fingerprint-continuity valid time; `--prior-run FILE` on the CLI), and redaction modes (`analysisOptions.redaction`). Drift between schema and code undermines agent workflows that rely on the contract — e.g. these two FK options were read by `tool.py` but absent from the schema, so with `additionalProperties: false` a request setting them was rejected at validation and the feature was unreachable through the contract until the schema declared them.
 
 ---
 
