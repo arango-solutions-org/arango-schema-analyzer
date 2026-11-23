@@ -104,6 +104,13 @@ analysis already uses a key now reserved for mapping ids (see below).
   `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
   threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
   expire at once.
+- **The OWL exports carry the same `phys:` annotations, and Turtle declares all of them.**
+  The annotations were listed by hand three times and had drifted: JSON-LD left out a
+  relationship's `phys:typeField` / `phys:typeValue`, which Turtle wrote, and Turtle
+  wrote `phys:observedCardinality` without declaring it as an annotation property. Both
+  formats now read one table per kind. `diff_analyses` also sees property changes when
+  an entity lists its properties as bare names or as a dict keyed by name; it compared
+  them as empty before.
 
 ## 0.20.0 — 2026-11-16
 
