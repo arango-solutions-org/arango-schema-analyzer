@@ -198,3 +198,47 @@ def test_snapshot_matches_high_cardinality_fixture():
     db = FakeDB(collections=collections, graphs=fx["graphs"], graph_props=graph_props, samples=samples)
     snap = snapshot_physical_schema(db, sample_limit_per_collection=1, include_samples_in_snapshot=False)
     assert snap == fx
+
+
+def _counting_db() -> tuple[FakeDB, list[str]]:
+    """A two-collection :class:`FakeDB` whose AQL queries are recorded."""
+    db = FakeDB(
+        collections={
+            "people": FakeCollection(col_type=2, count=2, indexes=[], properties={"type": 2}),
+            "knows": FakeCollection(col_type=3, count=1, indexes=[], properties={"type": 3}),
+        },
+        graphs=[],
+        graph_props={},
+        samples={
+            "people": [{"_key": "a", "name": "Ann"}, {"_key": "b", "name": "Bo"}],
+            "knows": [{"_key": "1", "_from": "people/a", "_to": "people/b"}],
+        },
+    )
+    queries: list[str] = []
+    execute = db.aql.execute
+
+    def recording_execute(query, bind_vars=None):
+        queries.append(query)
+        return execute(query, bind_vars)
+
+    db.aql.execute = recording_execute
+    return db, queries
+
+
+def test_full_sampling_skipped_when_samples_are_not_kept():
+    # The phase-5 sample is read only to be stored on the snapshot; without
+    # include_samples_in_snapshot it was queried per collection and thrown away.
+    db, queries = _counting_db()
+    snap = snapshot_physical_schema(db, sample_limit_per_collection=5, include_samples_in_snapshot=False)
+    assert not [q for q in queries if "LIMIT @limit RETURN d" in q]
+    for col in snap["collections"]:
+        assert not {"sample_documents", "sample_edges", "sample_error"} & col.keys()
+
+
+def test_full_sampling_runs_once_per_collection_when_samples_are_kept():
+    db, queries = _counting_db()
+    snap = snapshot_physical_schema(db, sample_limit_per_collection=5, include_samples_in_snapshot=True)
+    assert len([q for q in queries if "LIMIT @limit RETURN d" in q]) == 2
+    by_name = {c["name"]: c for c in snap["collections"]}
+    assert [d["_key"] for d in by_name["people"]["sample_documents"]] == ["a", "b"]
+    assert [d["_key"] for d in by_name["knows"]["sample_edges"]] == ["1"]
