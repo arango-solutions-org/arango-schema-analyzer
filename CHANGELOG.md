@@ -104,6 +104,11 @@ analysis already uses a key now reserved for mapping ids (see below).
   `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
   threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
   expire at once.
+- **The snapshot no longer samples documents it then discards.** With
+  `sampleLimitPerCollection` above 0 and `includeSamplesInSnapshot` false, it ran a
+  `LIMIT` query of up to that many documents on every collection and threw the rows
+  away; the eval runner paid for it on every run. The query now runs only when the
+  samples are kept, and a failure of it can no longer add `sample_error` when they are not.
 
 ## 0.20.0 — 2026-11-16
 
