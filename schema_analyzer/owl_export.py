@@ -5,10 +5,99 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .defaults import DEFAULT_OWL_BASE_IRI, DEFAULT_OWL_PHYSICAL_IRI
-from .utils import normalize_analysis_dict
+from .utils import conceptual_entities, conceptual_relationships, normalize_analysis_dict
 
 if TYPE_CHECKING:
     from .types import AnalysisResult
+
+
+#: The standard W3C prefixes every export declares, besides the base and ``phys:`` IRIs.
+_W3C_PREFIXES: dict[str, str] = {
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+}
+
+#: ``phys:`` annotations a class carries, as ``(annotation local name, entity-mapping key)``.
+#: The Turtle and JSON-LD exports both read this, so they carry the same annotations.
+_ENTITY_ANNOTATIONS: tuple[tuple[str, str], ...] = (
+    ("mappingStyle", "style"),
+    ("collectionName", "collectionName"),
+    ("typeField", "typeField"),
+    ("typeValue", "typeValue"),
+    # LABELS style: labelValue is one of the labels listed in labelsField.
+    ("labelsField", "labelsField"),
+    ("labelValue", "labelValue"),
+)
+
+#: ``phys:`` annotations an object property carries, as ``(annotation local name,
+#: relationship-mapping key)``.
+_RELATIONSHIP_ANNOTATIONS: tuple[tuple[str, str], ...] = (
+    ("mappingStyle", "style"),
+    ("edgeCollectionName", "edgeCollectionName"),
+    ("typeField", "typeField"),
+    ("typeValue", "typeValue"),
+)
+
+#: Every ``phys:`` annotation property the exports can write, declared once in the
+#: Turtle header: the two mapping tables, the observed cardinality of a relationship,
+#: and the location annotations of a datatype property.
+_ANNOTATION_PROPERTIES: tuple[str, ...] = (
+    *dict.fromkeys(name for name, _ in _ENTITY_ANNOTATIONS + _RELATIONSHIP_ANNOTATIONS),
+    "observedCardinality",
+    "attributeName",
+    "attributePath",
+    "multiValued",
+)
+
+
+def _phys_annotations(mapping: Any, table: tuple[tuple[str, str], ...]) -> list[tuple[str, str]]:
+    """``(annotation local name, value)`` for each key of *table* set in *mapping*."""
+    if not isinstance(mapping, dict):
+        return []
+    return [(name, str(mapping[key])) for name, key in table if mapping.get(key)]
+
+
+def _mapped_schema(
+    data: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """``(entities, relationships, entity mappings, relationship mappings)`` of an analysis.
+
+    The well-formed entities and relationships of the conceptual schema, and the
+    physical-mapping entries keyed by entity name and by relationship type (``{}``
+    when missing).
+    """
+    cs = data.get("conceptualSchema") or {}
+    pm = data.get("physicalMapping") or {}
+    pm_entities = pm.get("entities")
+    pm_rels = pm.get("relationships")
+    return (
+        conceptual_entities(cs),
+        conceptual_relationships(cs),
+        pm_entities if isinstance(pm_entities, dict) else {},
+        pm_rels if isinstance(pm_rels, dict) else {},
+    )
+
+
+def _property_spec(mapping: Any, prop: str) -> dict[str, Any]:
+    """The ``properties.<prop>`` entry of an entity mapping, or ``{}`` when it has none."""
+    props = mapping.get("properties") if isinstance(mapping, dict) else None
+    spec = props.get(prop) if isinstance(props, dict) else None
+    return spec if isinstance(spec, dict) else {}
+
+
+def _property_path(mapping: Any, prop: str) -> list[str] | None:
+    """The ``path`` of *prop* in an entity mapping, or ``None`` when it has none."""
+    path = _property_spec(mapping, prop).get("path")
+    if isinstance(path, list) and path and all(isinstance(seg, str) for seg in path):
+        return list(path)
+    return None
+
+
+def _property_multi_valued(mapping: Any, prop: str) -> bool:
+    """Whether an entity mapping marks *prop* ``multiValued`` (its attribute holds a list)."""
+    return _property_spec(mapping, prop).get("multiValued") is True
 
 
 def _ttl_escape(s: str) -> str:
@@ -146,17 +235,10 @@ def _datatype_properties(
     skipped rather than punned, and so is a sanitized name two different
     property names collapse to — neither IRI could say which field it means.
     """
-    cs = data.get("conceptualSchema") or {}
-    pm_entities = (data.get("physicalMapping") or {}).get("entities")
-    pm_entities = pm_entities if isinstance(pm_entities, dict) else {}
-    entities = cs.get("entities")
+    entities, _, pm_entities, _ = _mapped_schema(data)
     by_local: dict[str, dict[str, Any]] = {}
-    for e in entities if isinstance(entities, list) else []:
-        if not isinstance(e, dict) or not isinstance(e.get("name"), str) or not e["name"]:
-            continue
+    for e in entities:
         mapping = pm_entities.get(e["name"])
-        prop_map = mapping.get("properties") if isinstance(mapping, dict) else None
-        prop_map = prop_map if isinstance(prop_map, dict) else {}
         props = e.get("properties")
         for prop in props if isinstance(props, list) else []:
             if not isinstance(prop, dict) or not isinstance(prop.get("name"), str) or not prop["name"]:
@@ -171,16 +253,15 @@ def _datatype_properties(
                 entry["domains"].append(e["name"])
             ptype = prop.get("type")
             entry["types"].add(_XSD_RANGE.get(ptype.strip().lower()) if isinstance(ptype, str) else None)
-            spec = prop_map.get(raw)
-            if isinstance(spec, dict) and spec.get("multiValued") is True:
+            if _property_multi_valued(mapping, raw):
                 entry["multi"] = True
-            path = spec.get("path") if isinstance(spec, dict) else None
-            if isinstance(path, list) and path and all(isinstance(seg, str) for seg in path):
+            path = _property_path(mapping, raw)
+            if path is not None:
                 # A value inside a nested object (issue #33) has no single stored
                 # attribute name: it travels as phys:attributePath instead.
                 entry["fields"].add(tuple(path) if len(path) > 1 else path[0])
                 continue
-            field = spec.get("field") if isinstance(spec, dict) else None
+            field = _property_spec(mapping, raw).get("field")
             entry["fields"].add(field if isinstance(field, str) and field else raw)
 
     out: list[tuple[str, str, list[str], str | None, str | None, list[str] | None, bool]] = []
@@ -202,12 +283,8 @@ def _reserved_locals(data: dict[str, Any]) -> set[str]:
     """IRI local names the export already gives a class or an object property."""
     cs = data.get("conceptualSchema") or {}
     names: set[str] = set()
-    for e in cs.get("entities") or []:
-        if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"]:
-            names.add(_sanitize_iri_local(e["name"]))
-    for r in cs.get("relationships") or []:
-        if isinstance(r, dict) and isinstance(r.get("type"), str) and r["type"]:
-            names.add(_sanitize_iri_local(r["type"]))
+    names.update(_sanitize_iri_local(e["name"]) for e in conceptual_entities(cs))
+    names.update(_sanitize_iri_local(r["type"]) for r in conceptual_relationships(cs))
     for sub, sup in _subclass_edges(data):
         names.update((_sanitize_iri_local(sub), _sanitize_iri_local(sup)))
     return names
@@ -228,18 +305,11 @@ def export_conceptual_model_as_owl_turtle(
     """
     data = normalize_analysis_dict(analysis)
 
-    cs = data.get("conceptualSchema") or {}
-    pm = data.get("physicalMapping") or {}
-
-    entities = cs.get("entities") or []
-    rels = cs.get("relationships") or []
+    entities, rels, pm_entities, pm_rels = _mapped_schema(data)
 
     lines: list[str] = []
     lines.append(f"@prefix : <{base_iri}> .")
-    lines.append("@prefix owl: <http://www.w3.org/2002/07/owl#> .")
-    lines.append("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .")
-    lines.append("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .")
-    lines.append("@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .")
+    lines.extend(f"@prefix {prefix}: <{iri}> ." for prefix, iri in _W3C_PREFIXES.items())
     lines.append(f"@prefix phys: <{phys_iri}> .")
     lines.append("")
     lines.append(": a owl:Ontology ;")
@@ -248,55 +318,24 @@ def export_conceptual_model_as_owl_turtle(
     lines.append("")
 
     # Declare annotation properties for physical mappings (best-effort; aligns with docs/OWL-FOR-CONCEPTUAL-SCHEMA.md)
-    for ap in [
-        "mappingStyle",
-        "collectionName",
-        "typeField",
-        "typeValue",
-        "labelsField",
-        "labelValue",
-        "edgeCollectionName",
-        "attributeName",
-        "attributePath",
-        "multiValued",
-    ]:
+    for ap in _ANNOTATION_PROPERTIES:
         lines.append(f"phys:{ap} a owl:AnnotationProperty .")
     lines.append("")
 
     # Classes
-    if isinstance(entities, list):
-        for e in entities:
-            if not isinstance(e, dict):
-                continue
-            name = e.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            safe = _sanitize_iri_local(name)
-            iri = f":{safe}"
-            lines.append(f"{iri} a owl:Class ;")
-            lines.append(f'  rdfs:label "{_ttl_escape(name)}" .')
-            mapping = (pm.get("entities") or {}).get(name) if isinstance(pm.get("entities"), dict) else None
-            if isinstance(mapping, dict):
-                style = mapping.get("style")
-                if style:
-                    lines.append(f'{iri} phys:mappingStyle "{_ttl_escape(str(style))}" .')
-                if mapping.get("collectionName"):
-                    lines.append(f'{iri} phys:collectionName "{_ttl_escape(str(mapping["collectionName"]))}" .')
-                if mapping.get("typeField"):
-                    lines.append(f'{iri} phys:typeField "{_ttl_escape(str(mapping["typeField"]))}" .')
-                if mapping.get("typeValue"):
-                    lines.append(f'{iri} phys:typeValue "{_ttl_escape(str(mapping["typeValue"]))}" .')
-                if mapping.get("labelsField"):
-                    # LABELS style: labelValue is one of the labels listed in this field.
-                    lines.append(f'{iri} phys:labelsField "{_ttl_escape(str(mapping["labelsField"]))}" .')
-                if mapping.get("labelValue"):
-                    lines.append(f'{iri} phys:labelValue "{_ttl_escape(str(mapping["labelValue"]))}" .')
-            lines.append("")
+    for e in entities:
+        name = e["name"]
+        iri = f":{_sanitize_iri_local(name)}"
+        lines.append(f"{iri} a owl:Class ;")
+        lines.append(f'  rdfs:label "{_ttl_escape(name)}" .')
+        for ap, value in _phys_annotations(pm_entities.get(name), _ENTITY_ANNOTATIONS):
+            lines.append(f'{iri} phys:{ap} "{_ttl_escape(value)}" .')
+        lines.append("")
 
     # Class hierarchy — shard families plus discovered abstractions (rdfs:subClassOf)
     subclass_edges = _subclass_edges(data)
     if subclass_edges:
-        declared = {e["name"] for e in entities if isinstance(e, dict) and isinstance(e.get("name"), str)}
+        declared = {e["name"] for e in entities}
         # Only mint a class for a superclass that is not already an entity. A specialization
         # parent is a real collection, and a synthesized abstraction is merged into
         # `entities` — declaring either again would duplicate its label.
@@ -311,51 +350,35 @@ def export_conceptual_model_as_owl_turtle(
 
     # Object properties (relationships)
     cardinality_by_rel = _cardinality_by_relationship(data)
-    if isinstance(rels, list):
-        for r in rels:
-            if not isinstance(r, dict):
-                continue
-            rtype = r.get("type")
-            if not isinstance(rtype, str) or not rtype:
-                continue
-            from_e = r.get("fromEntity")
-            to_e = r.get("toEntity")
-            safe_rtype = _sanitize_iri_local(rtype)
-            iri = f":{safe_rtype}"
-            lines.append(f"{iri} a owl:ObjectProperty ;")
-            lines.append(f'  rdfs:label "{_ttl_escape(rtype)}" ;')
-            if isinstance(from_e, str) and from_e:
-                lines.append(f"  rdfs:domain :{_sanitize_iri_local(from_e)} ;")
-            if isinstance(to_e, str) and to_e:
-                lines.append(f"  rdfs:range :{_sanitize_iri_local(to_e)} ;")
-            lines[-1] = lines[-1].rstrip(";") + " ." if lines[-1].endswith(";") else lines[-1]
+    for r in rels:
+        rtype = r["type"]
+        from_e = r.get("fromEntity")
+        to_e = r.get("toEntity")
+        iri = f":{_sanitize_iri_local(rtype)}"
+        lines.append(f"{iri} a owl:ObjectProperty ;")
+        lines.append(f'  rdfs:label "{_ttl_escape(rtype)}" ;')
+        if isinstance(from_e, str) and from_e:
+            lines.append(f"  rdfs:domain :{_sanitize_iri_local(from_e)} ;")
+        if isinstance(to_e, str) and to_e:
+            lines.append(f"  rdfs:range :{_sanitize_iri_local(to_e)} ;")
+        lines[-1] = lines[-1].rstrip(";") + " ." if lines[-1].endswith(";") else lines[-1]
 
-            mapping = (pm.get("relationships") or {}).get(rtype) if isinstance(pm.get("relationships"), dict) else None
-            if isinstance(mapping, dict):
-                style = mapping.get("style")
-                if style:
-                    lines.append(f'{iri} phys:mappingStyle "{_ttl_escape(str(style))}" .')
-                if mapping.get("edgeCollectionName"):
-                    val = _ttl_escape(str(mapping["edgeCollectionName"]))
-                    lines.append(f'{iri} phys:edgeCollectionName "{val}" .')
-                if mapping.get("typeField"):
-                    lines.append(f'{iri} phys:typeField "{_ttl_escape(str(mapping["typeField"]))}" .')
-                if mapping.get("typeValue"):
-                    lines.append(f'{iri} phys:typeValue "{_ttl_escape(str(mapping["typeValue"]))}" .')
+        for ap, value in _phys_annotations(pm_rels.get(rtype), _RELATIONSHIP_ANNOTATIONS):
+            lines.append(f'{iri} phys:{ap} "{_ttl_escape(value)}" .')
 
-            pattern = cardinality_by_rel.get(rtype)
-            if pattern:
-                lines.append(f'{iri} phys:observedCardinality "{_ttl_escape(pattern)}" .')
-                functional, inverse_functional = _cardinality_characteristics(pattern)
-                if functional:
-                    lines.append(f"{iri} a owl:FunctionalProperty .")
-                if inverse_functional:
-                    lines.append(f"{iri} a owl:InverseFunctionalProperty .")
+        pattern = cardinality_by_rel.get(rtype)
+        if pattern:
+            lines.append(f'{iri} phys:observedCardinality "{_ttl_escape(pattern)}" .')
+            functional, inverse_functional = _cardinality_characteristics(pattern)
+            if functional:
+                lines.append(f"{iri} a owl:FunctionalProperty .")
+            if inverse_functional:
+                lines.append(f"{iri} a owl:InverseFunctionalProperty .")
 
-            inverse_of = r.get("inverseOf")
-            if isinstance(inverse_of, str) and inverse_of:
-                lines.append(f"{iri} owl:inverseOf :{_sanitize_iri_local(inverse_of)} .")
-            lines.append("")
+        inverse_of = r.get("inverseOf")
+        if isinstance(inverse_of, str) and inverse_of:
+            lines.append(f"{iri} owl:inverseOf :{_sanitize_iri_local(inverse_of)} .")
+        lines.append("")
 
     # Datatype properties — the entities' fields (docs/OWL-FOR-CONCEPTUAL-SCHEMA.md
     # "Data Properties"). Without these the ontology carried no field at all.
@@ -399,42 +422,21 @@ def export_conceptual_model_as_jsonld(
     ``phys:`` physical-mapping annotations.
     """
     data = normalize_analysis_dict(analysis)
-    cs = data.get("conceptualSchema") or {}
-    pm = data.get("physicalMapping") or {}
-    raw_entities = cs.get("entities")
-    entities = raw_entities if isinstance(raw_entities, list) else []
-    raw_rels = cs.get("relationships")
-    rels = raw_rels if isinstance(raw_rels, list) else []
-    raw_pm_entities = pm.get("entities")
-    pm_entities = raw_pm_entities if isinstance(raw_pm_entities, dict) else {}
-    raw_pm_rels = pm.get("relationships")
-    pm_rels = raw_pm_rels if isinstance(raw_pm_rels, dict) else {}
+    entities, rels, pm_entities, pm_rels = _mapped_schema(data)
     cardinality_by_rel = _cardinality_by_relationship(data)
 
     graph: list[dict[str, Any]] = []
     class_nodes: dict[str, dict[str, Any]] = {}
 
     for e in entities:
-        if not isinstance(e, dict) or not isinstance(e.get("name"), str) or not e["name"]:
-            continue
         name = e["name"]
         node: dict[str, Any] = {
             "@id": _sanitize_iri_local(name),
             "@type": "owl:Class",
             "rdfs:label": name,
         }
-        mapping = pm_entities.get(name)
-        if isinstance(mapping, dict):
-            for phys_key, mkey in (
-                ("mappingStyle", "style"),
-                ("collectionName", "collectionName"),
-                ("typeField", "typeField"),
-                ("typeValue", "typeValue"),
-                ("labelsField", "labelsField"),
-                ("labelValue", "labelValue"),
-            ):
-                if mapping.get(mkey):
-                    node[f"phys:{phys_key}"] = str(mapping[mkey])
+        for ap, value in _phys_annotations(pm_entities.get(name), _ENTITY_ANNOTATIONS):
+            node[f"phys:{ap}"] = value
         class_nodes[name] = node
         graph.append(node)
 
@@ -452,8 +454,6 @@ def export_conceptual_model_as_jsonld(
         member_node["rdfs:subClassOf"] = {"@id": fam_id}
 
     for r in rels:
-        if not isinstance(r, dict) or not isinstance(r.get("type"), str) or not r["type"]:
-            continue
         rtype = r["type"]
         types: list[str] = ["owl:ObjectProperty"]
         pattern = cardinality_by_rel.get(rtype)
@@ -471,12 +471,8 @@ def export_conceptual_model_as_jsonld(
             node["phys:observedCardinality"] = pattern
         if isinstance(r.get("inverseOf"), str) and r["inverseOf"]:
             node["owl:inverseOf"] = {"@id": _sanitize_iri_local(r["inverseOf"])}
-        mapping = pm_rels.get(rtype)
-        if isinstance(mapping, dict):
-            if mapping.get("style"):
-                node["phys:mappingStyle"] = str(mapping["style"])
-            if mapping.get("edgeCollectionName"):
-                node["phys:edgeCollectionName"] = str(mapping["edgeCollectionName"])
+        for ap, value in _phys_annotations(pm_rels.get(rtype), _RELATIONSHIP_ANNOTATIONS):
+            node[f"phys:{ap}"] = value
         graph.append(node)
 
     for local, label, domains, xsd, field, path, multi in _datatype_properties(data, reserved=_reserved_locals(data)):
@@ -498,10 +494,7 @@ def export_conceptual_model_as_jsonld(
     return {
         "@context": {
             "@vocab": base_iri,
-            "owl": "http://www.w3.org/2002/07/owl#",
-            "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-            "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-            "xsd": "http://www.w3.org/2001/XMLSchema#",
+            **_W3C_PREFIXES,
             "phys": phys_iri,
         },
         "@graph": graph,

@@ -3,20 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from schema_analyzer.utils import singularize
-
-
-def _norm(s: str) -> str:
-    x = "".join(ch.lower() for ch in s if ch.isalnum() or ch in ("_", "-")).replace("-", "_")
-    return singularize(x)
-
-
-def _as_set(items: list[str]) -> set[str]:
-    return {_norm(x) for x in items if isinstance(x, str) and x}
+from ..quality import entity_name_set, name_set, normalize_name, prf
+from .generator import entity_collection_name, relationship_collection_name
 
 
 def _norm_rel_sig(rel_type: str, from_ent: str, to_ent: str) -> str:
-    return f"{_norm(rel_type)}|{_norm(from_ent)}|{_norm(to_ent)}"
+    return f"{normalize_name(rel_type)}|{normalize_name(from_ent)}|{normalize_name(to_ent)}"
 
 
 @dataclass(frozen=True)
@@ -27,57 +19,19 @@ class PRF:
 
 
 def _prf(pred: set[str], truth: set[str]) -> PRF:
-    if not pred and not truth:
-        return PRF(precision=1.0, recall=1.0, f1=1.0)
-    if not pred:
-        return PRF(precision=1.0, recall=0.0, f1=0.0)
-    if not truth:
-        return PRF(precision=0.0, recall=1.0, f1=0.0)
-    tp = len(pred & truth)
-    p = tp / len(pred) if pred else 0.0
-    r = tp / len(truth) if truth else 0.0
-    f1 = (2 * p * r / (p + r)) if (p + r) else 0.0
-    return PRF(precision=p, recall=r, f1=f1)
-
-
-def _extract_entity_names(
-    data: dict[str, Any],
-    *,
-    include_labels: bool = False,
-) -> set[str]:
-    ents = data.get("entities") or []
-    out: list[str] = []
-    if isinstance(ents, list):
-        for e in ents:
-            if isinstance(e, dict):
-                n = e.get("name")
-                if isinstance(n, str) and n:
-                    out.append(n)
-                if include_labels:
-                    labels = e.get("labels")
-                    if isinstance(labels, list):
-                        out.extend(x for x in labels if isinstance(x, str))
-    return _as_set(out)
+    return PRF(**prf(pred, truth))
 
 
 def extract_predicted_entities(conceptual_schema: dict[str, Any]) -> set[str]:
-    return _extract_entity_names(conceptual_schema, include_labels=True)
+    return entity_name_set(conceptual_schema, include_labels=True)
 
 
 def extract_truth_entities(domain_spec: dict[str, Any]) -> set[str]:
-    return _extract_entity_names(domain_spec)
+    return entity_name_set(domain_spec, include_labels=False)
 
 
 def extract_relationship_types(data: dict[str, Any]) -> set[str]:
-    rels = data.get("relationships") or []
-    out: list[str] = []
-    if isinstance(rels, list):
-        for r in rels:
-            if isinstance(r, dict):
-                t = r.get("type")
-                if isinstance(t, str) and t:
-                    out.append(t)
-    return _as_set(out)
+    return name_set(data.get("relationships"), "type")
 
 
 extract_predicted_relationship_types = extract_relationship_types
@@ -149,7 +103,7 @@ def expected_mapping_from_domain(domain_spec: dict[str, Any], variant: Any) -> d
         prefix = getattr(variant, "entity_collection_prefix", "")
         for et in entities:
             if isinstance(et, str) and et:
-                expected_entities[et] = {"style": "COLLECTION", "collectionName": f"{prefix}{et.lower()}s"}
+                expected_entities[et] = {"style": "COLLECTION", "collectionName": entity_collection_name(prefix, et)}
 
     expected_rels: dict[str, dict[str, Any]] = {}
     if getattr(variant, "rel_style", None) == "GENERIC_WITH_TYPE":
@@ -167,7 +121,10 @@ def expected_mapping_from_domain(domain_spec: dict[str, Any], variant: Any) -> d
         prefix = getattr(variant, "rel_collection_prefix", "")
         for rt in rels:
             if isinstance(rt, str) and rt:
-                expected_rels[rt] = {"style": "DEDICATED_COLLECTION", "edgeCollectionName": f"{prefix}{rt.lower()}"}
+                expected_rels[rt] = {
+                    "style": "DEDICATED_COLLECTION",
+                    "edgeCollectionName": relationship_collection_name(prefix, rt),
+                }
 
     return {"entities": expected_entities, "relationships": expected_rels}
 
@@ -180,36 +137,16 @@ def score_mapping_style(domain_spec: dict[str, Any], physical_mapping: dict[str,
     pred_entities = (physical_mapping.get("entities") or {}) if isinstance(physical_mapping, dict) else {}
     pred_rels = (physical_mapping.get("relationships") or {}) if isinstance(physical_mapping, dict) else {}
 
-    def ok_entity(et: str, exp: dict[str, Any], got: Any) -> bool:
-        if not isinstance(got, dict):
-            return False
-        if got.get("style") != exp.get("style"):
-            return False
-        if exp["style"] == "COLLECTION":
-            return got.get("collectionName") == exp.get("collectionName")
-        return (
-            got.get("collectionName") == exp.get("collectionName")
-            and got.get("typeField") == exp.get("typeField")
-            and str(got.get("typeValue")) == str(exp.get("typeValue"))
-        )
-
-    def ok_rel(rt: str, exp: dict[str, Any], got: Any) -> bool:
-        if not isinstance(got, dict):
-            return False
-        if got.get("style") != exp.get("style"):
-            return False
-        if exp["style"] == "DEDICATED_COLLECTION":
-            return got.get("edgeCollectionName") == exp.get("edgeCollectionName")
-        return (
-            got.get("edgeCollectionName") == exp.get("edgeCollectionName")
-            and got.get("typeField") == exp.get("typeField")
-            and str(got.get("typeValue")) == str(exp.get("typeValue"))
+    def ok(exp: dict[str, Any], got: Any) -> bool:
+        # Every key the expected mapping carries must match; ``typeValue`` is compared as text.
+        return isinstance(got, dict) and all(
+            (str(got.get(k)) == str(v)) if k == "typeValue" else got.get(k) == v for k, v in exp.items()
         )
 
     ent_total = len(expected["entities"])
     rel_total = len(expected["relationships"])
-    ent_ok = sum(1 for et, exp in expected["entities"].items() if ok_entity(et, exp, pred_entities.get(et)))
-    rel_ok = sum(1 for rt, exp in expected["relationships"].items() if ok_rel(rt, exp, pred_rels.get(rt)))
+    ent_ok = sum(1 for et, exp in expected["entities"].items() if ok(exp, pred_entities.get(et)))
+    rel_ok = sum(1 for rt, exp in expected["relationships"].items() if ok(exp, pred_rels.get(rt)))
 
     return {
         "entities": {"accuracy": (ent_ok / ent_total) if ent_total else 1.0, "ok": ent_ok, "total": ent_total},

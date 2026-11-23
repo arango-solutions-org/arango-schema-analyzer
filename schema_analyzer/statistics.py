@@ -16,8 +16,9 @@ run so downstream cachers can reason about freshness).
 Bounded AQL cost by design:
 
 * One ``LENGTH(@@c)`` per non-system collection.
-* One ``COLLECT WITH COUNT`` per ``LABEL`` / ``GENERIC_WITH_TYPE`` subset,
-  and one edge count per relationship entry.
+* One ``COLLECT WITH COUNT`` per ``LABEL`` / ``LABELS`` / ``MULTI_LABEL``
+  entity and ``GENERIC_WITH_TYPE`` subset, and one edge count per
+  relationship entry.
 * No per-document scans; no joins; no DOCUMENT() lookups.
 
 A 100-collection / 1_000-relationship schema completes well inside the
@@ -30,12 +31,14 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from ._arango import aql_execute
+from ._arango import aql_first
 from .defaults import (
     STATISTICS_CARDINALITY_THRESHOLD,
     STATISTICS_DEGREE_ROUND,
     STATISTICS_SELECTIVITY_ROUND,
 )
+from .errors import SchemaAnalyzerError
+from .mapping import PhysicalMapping
 
 if TYPE_CHECKING:
     from arango.database import StandardDatabase
@@ -115,6 +118,7 @@ def compute_statistics(
         }
 
     # ── Entities ───────────────────────────────────────────────────────
+    entity_mapping = PhysicalMapping.from_json(physical_mapping)
     for ent_name, ent_mapping in (physical_mapping.get("entities") or {}).items():
         if not isinstance(ent_mapping, dict):
             continue
@@ -122,18 +126,11 @@ def compute_statistics(
         if not isinstance(col, str):
             continue
         style = ent_mapping.get("style")
-        if style == "LABEL":
-            type_field = ent_mapping.get("typeField")
-            type_value = ent_mapping.get("typeValue")
-            est = _safe_filtered_count(db, col, type_field, type_value)
-        elif style in ("LABELS", "MULTI_LABEL"):
-            # A node may carry several labels: count the documents whose label array
-            # holds this one, as PhysicalMapping.aql_entity_match matches them.
-            # ``MULTI_LABEL`` is arango-query-core's name for the same shape (a
-            # supertype in a shared collection).
-            est = _safe_filtered_count(
-                db, col, ent_mapping.get("labelsField"), ent_mapping.get("labelValue") or ent_name, in_array=True
-            )
+        if style in ("LABEL", "LABELS", "MULTI_LABEL"):
+            # A subset of a shared collection: count the documents
+            # PhysicalMapping.aql_entity_match matches for it, by its type value or,
+            # for LABELS / MULTI_LABEL (a node may carry several labels), its label.
+            est = _safe_entity_count(db, entity_mapping, ent_name)
         elif style == "UNION":
             continue  # its members' counts, summed below
         else:
@@ -282,14 +279,33 @@ def _endpoint_map_from_conceptual(
     return out
 
 
+def _safe_count(db: StandardDatabase, query: str, bind_vars: dict[str, Any], what: str) -> int | None:
+    row = aql_first(db, query, bind_vars, log=logger, what=what)
+    return None if row is None else int(row)
+
+
 def _safe_collection_length(db: StandardDatabase, name: str) -> int | None:
+    return _safe_count(db, "RETURN LENGTH(@@c)", {"@c": name}, f"LENGTH({name})")
+
+
+def _safe_entity_count(db: StandardDatabase, mapping: PhysicalMapping, entity_type: str) -> int | None:
+    """COLLECT WITH COUNT over the documents ``aql_entity_match`` matches for an entity.
+
+    Returns ``None`` on any AQL failure or when the entity's mapping is incomplete
+    (``aql_entity_match`` rejects it) — the caller treats that as "this subset is not
+    countable" rather than silently reporting 0.
+    """
     try:
-        cursor = aql_execute(db, "RETURN LENGTH(@@c)", bind_vars={"@c": name})
-        for row in cursor:
-            return int(row)
-    except Exception as exc:  # pragma: no cover — logged path
-        logger.debug("LENGTH(%s) failed: %s", name, exc)
-    return None
+        match = mapping.aql_entity_match(variable="d", entity_type=entity_type)
+    except SchemaAnalyzerError as exc:
+        logger.debug("entity count for %s skipped: %s", entity_type, exc)
+        return None
+    return _safe_count(
+        db,
+        f"{match['query']} COLLECT WITH COUNT INTO c RETURN c",
+        match["bind_vars"],
+        f"entity count for {entity_type}",
+    )
 
 
 def _safe_filtered_count(
@@ -297,13 +313,9 @@ def _safe_filtered_count(
     collection: str,
     type_field: Any,
     type_value: Any,
-    *,
-    in_array: bool = False,
 ) -> int | None:
-    """COLLECT WITH COUNT where ``d[type_field] == type_value``.
-
-    With ``in_array``, where ``type_value IN d[type_field]`` instead (a ``LABELS``
-    entity, whose field holds a list of labels).
+    """COLLECT WITH COUNT where ``d[type_field] == type_value`` (a ``GENERIC_WITH_TYPE``
+    relationship's edges).
 
     Returns ``None`` on any AQL failure or when ``type_field`` /
     ``type_value`` are missing — the caller treats that as "this subset
@@ -313,24 +325,12 @@ def _safe_filtered_count(
         return None
     if type_value is None:
         return None
-    try:
-        match = "@val IN d[@field]" if in_array else "d[@field] == @val"
-        cursor = aql_execute(
-            db,
-            f"FOR d IN @@c FILTER {match} COLLECT WITH COUNT INTO c RETURN c",
-            bind_vars={"@c": collection, "field": type_field, "val": type_value},
-        )
-        for row in cursor:
-            return int(row)
-    except Exception as exc:  # pragma: no cover — logged path
-        logger.debug(
-            "filtered COLLECT(%s, %s=%s) failed: %s",
-            collection,
-            type_field,
-            type_value,
-            exc,
-        )
-    return None
+    return _safe_count(
+        db,
+        "FOR d IN @@c FILTER d[@field] == @val COLLECT WITH COUNT INTO c RETURN c",
+        {"@c": collection, "field": type_field, "val": type_value},
+        f"filtered COLLECT({collection}, {type_field}={type_value})",
+    )
 
 
 def _now_iso() -> str:

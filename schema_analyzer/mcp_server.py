@@ -110,8 +110,7 @@ def build_app(*, host: str | None = None, port: int | None = None):
     """Construct the FastMCP app with generic + per-operation tools."""
     FastMCP = _require_fastmcp()
 
-    from .tool import run_tool
-    from .tool_contract_v1 import CONTRACT_VERSION
+    from .tool import _error_response, run_tool
 
     mcp = FastMCP(
         "arangodb-schema-analyzer",
@@ -139,19 +138,9 @@ def build_app(*, host: str | None = None, port: int | None = None):
         try:
             req = json.loads(request_json)
         except json.JSONDecodeError as e:
-            return {
-                "contractVersion": CONTRACT_VERSION,
-                "operation": None,
-                "ok": False,
-                "error": {"code": "INVALID_REQUEST", "message": f"Invalid JSON: {e}"},
-            }
+            return _error_response(op=None, code="INVALID_REQUEST", message=f"Invalid JSON: {e}")
         if not isinstance(req, dict):
-            return {
-                "contractVersion": CONTRACT_VERSION,
-                "operation": None,
-                "ok": False,
-                "error": {"code": "INVALID_REQUEST", "message": "request_json must be a JSON object"},
-            }
+            return _error_response(op=None, code="INVALID_REQUEST", message="request_json must be a JSON object")
         return run_tool(req)
 
     # --- typed per-operation tools (PRD §3.11) ---

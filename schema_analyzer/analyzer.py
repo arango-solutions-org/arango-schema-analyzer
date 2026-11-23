@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import logging
 import os
 import time
@@ -25,6 +24,7 @@ from .defaults import (
     DEFAULT_CACHE_TTL_SECONDS,
     DEFAULT_REVIEW_THRESHOLD,
     DEFAULT_TIMEOUT_MS,
+    FINGERPRINT_DISPLAY_LENGTH,
     MAX_REPAIR_ATTEMPTS,
     MIN_LLM_BUDGET_MS,
     SAMPLE_VALUE_TOP_K,
@@ -44,8 +44,7 @@ from .enrichment import (
     _apply_statistics,
     _apply_tenant_scope,
     _apply_vci,
-    _arango_product_dict_for,
-    _arango_product_status_for,
+    _arango_product_for,
 )
 from .errors import SchemaAnalyzerError
 from .incremental import (
@@ -55,13 +54,13 @@ from .incremental import (
     assess_change_state,
     coerce_prior,
     refresh_statistics,
+    revalidated_copy,
 )
 from .mapping import PhysicalMapping
 from .provenance import (
     annotate_provenance,
     carry_forward_first_seen,
     compute_valid_time,
-    prior_valid_from,
     stamp_temporal_provenance,
 )
 from .providers import create_provider, get_default_model, get_provider_env_var
@@ -80,7 +79,7 @@ from .snapshot import (
 )
 from .types import AnalysisMetadata, AnalysisResult, now_iso
 from .utils import analysis_cache_storage_key, llm_cache_segment, stable_dumps
-from .workflow import async_generate_validate_repair, run_generate_validate_repair
+from .workflow import WorkflowResult, async_generate_validate_repair, run_generate_validate_repair
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +140,13 @@ def _is_cached_fallback(cached: dict[str, Any]) -> bool:
     if not isinstance(md, dict):
         return False
     return bool(md.get("used_baseline") or md.get("usedBaseline"))
+
+
+def _infer_baseline(snapshot: dict[str, Any], entity_strategy: str) -> dict[str, Any]:
+    """Deterministic baseline inference under the requested entity modeling strategy."""
+    return infer_baseline_from_snapshot(
+        snapshot, collection_per_entity=entity_strategy == "collection", multi_label=entity_strategy == "labels"
+    )
 
 
 def _default_system_prompt() -> str:
@@ -465,10 +471,13 @@ class AgenticSchemaAnalyzer:
                 # older releases sit under keys that no longer match (provider and model
                 # joined the key). Should one be found anyway, retry the model rather
                 # than replay the baseline; a successful answer then overwrites it.
-                logger.info("Ignoring cached baseline fallback for key prefix %s", cache_storage_key[:16])
+                logger.info(
+                    "Ignoring cached baseline fallback for key prefix %s",
+                    cache_storage_key[:FINGERPRINT_DISPLAY_LENGTH],
+                )
                 cached = None
             if cached:
-                logger.info("Cache hit for key prefix %s", cache_storage_key[:16])
+                logger.info("Cache hit for key prefix %s", cache_storage_key[:FINGERPRINT_DISPLAY_LENGTH])
                 parsed = AnalysisResult.model_validate(cached)
                 stamped = self._stamp_metadata(
                     parsed.metadata,
@@ -491,9 +500,7 @@ class AgenticSchemaAnalyzer:
             logger.info("No LLM provider configured; falling back to baseline inference")
             doc_count = sum(1 for c in snapshot.get("collections", []) if c.get("type") == "document")
             edge_count = sum(1 for c in snapshot.get("collections", []) if c.get("type") == "edge")
-            baseline = infer_baseline_from_snapshot(
-                snapshot, collection_per_entity=entity_strategy == "collection", multi_label=entity_strategy == "labels"
-            )
+            baseline = _infer_baseline(snapshot, entity_strategy)
             stats_holder: dict[str, Any] = {
                 "physicalMapping": baseline.get("physicalMapping", {}),
                 "conceptualSchema": baseline.get("conceptualSchema", {}),
@@ -524,6 +531,7 @@ class AgenticSchemaAnalyzer:
             baseline_quality, baseline_health = build_quality_block(
                 baseline_conceptual, baseline_physical, snapshot, BASELINE_NO_LLM_CONFIDENCE, self.gold_reference
             )
+            arango_product, arango_product_status = _arango_product_for(snapshot)
             meta = AnalysisMetadata(
                 confidence=BASELINE_NO_LLM_CONFIDENCE,
                 timestamp=now_iso(),
@@ -555,8 +563,8 @@ class AgenticSchemaAnalyzer:
                 graph_rag=stats_holder["metadata"].get("graphRag"),
                 graph_membership=stats_holder["metadata"].get("graphMembership"),
                 tenant_scope_report=stats_holder["metadata"].get("tenantScopeReport"),
-                arango_product=_arango_product_dict_for(snapshot),
-                arango_product_status=_arango_product_status_for(snapshot),
+                arango_product=arango_product,
+                arango_product_status=arango_product_status,
                 quality_metrics=baseline_quality,
                 health_score=baseline_health,
             )
@@ -644,10 +652,9 @@ class AgenticSchemaAnalyzer:
         if isinstance(prep, AnalysisResult):
             return prep
 
-        errors: list[str] = []
-        warnings: list[str] = []
+        outcome: WorkflowResult | SchemaAnalyzerError
         try:
-            wf = run_generate_validate_repair(
+            outcome = run_generate_validate_repair(
                 provider=prep.provider,
                 model=prep.model,
                 system=prep.system,
@@ -655,47 +662,9 @@ class AgenticSchemaAnalyzer:
                 timeout_ms=prep.remaining_ms,
                 max_repair_attempts=prep.max_repair_attempts,
             )
-            data = wf.data
-            repair_attempts = wf.repair_attempts
-            if prep.field_name_map:
-                data = unmask_field_names(data, prep.field_name_map)
-            _apply_collection_name_allowlist(data, prep.snapshot, warnings)
-            _apply_reconciliation(data, prep.snapshot, warnings)
         except SchemaAnalyzerError as e:
-            logger.warning("LLM workflow failed, falling back to baseline: %s", e)
-            baseline = infer_baseline_from_snapshot(
-                prep.snapshot,
-                collection_per_entity=prep.entity_strategy == "collection",
-                multi_label=prep.entity_strategy == "labels",
-            )
-            data = {
-                "conceptualSchema": baseline.get("conceptualSchema", {}),
-                "physicalMapping": baseline.get("physicalMapping", {}),
-                "metadata": {
-                    "warnings": [str(e)],
-                    "detectedPatterns": baseline.get("detectedPatterns", []),
-                },
-            }
-            warnings.append("LLM workflow failed; returning deterministic baseline inference")
-            errors.append(str(e))
-            repair_attempts = 0
-
-        _apply_snapshot_passes(db, data, prep.snapshot)
-
-        return self._build_result(
-            snapshot=prep.snapshot,
-            data=data,
-            model=prep.model,
-            errors=errors,
-            warnings=warnings,
-            repair_attempts=repair_attempts,
-            fingerprint=prep.fingerprint,
-            cache_storage_key=prep.cache_storage_key,
-            use_cache=use_cache,
-            prov=prov,
-            domain_hint=prep.domain_hint,
-            entity_strategy=prep.entity_strategy,
-        )
+            outcome = e
+        return self._finish_llm_analysis(db, prep, outcome, prov=prov, use_cache=use_cache, label="LLM workflow")
 
     def analyze_incremental(
         self,
@@ -761,34 +730,13 @@ class AgenticSchemaAnalyzer:
             return refresh_statistics(db, pr, exclude_collections=exclude_collections)
 
         # unchanged — the fingerprint match just revalidated every element.
-        # Stamp copies so the caller's ``prior`` is never mutated in place.
-        completed = now_iso()
-        conceptual = copy.deepcopy(pr.conceptual_schema)
-        physical = copy.deepcopy(pr.physical_mapping)
-        stamp_temporal_provenance({"conceptualSchema": conceptual, "physicalMapping": physical}, now=completed)
-        # §3.13.5: shape fingerprint matches the prior run, so valid time is carried
-        # back along the unbroken chain (fingerprint-continuity).
-        valid_time, valid_time_source, predecessor = compute_valid_time(
-            completed_at=completed,
-            current_shape_fingerprint=pr.metadata.shape_fingerprint,
-            prior_shape_fingerprint=pr.metadata.shape_fingerprint,
-            prior_valid_from=prior_valid_from(pr.metadata),
-        )
-        meta = pr.metadata.model_copy(
-            update={
-                "incremental_refresh": "unchanged",
-                "cache_hit": True,
-                "analysis_completed_at": completed,
-                "transaction_time": completed,
-                "valid_time": valid_time,
-                "valid_time_source": valid_time_source,
-                "predecessor_fingerprint": predecessor,
-            }
-        )
+        conceptual, physical, update = revalidated_copy(pr)
+        update["incremental_refresh"] = "unchanged"
+        update["cache_hit"] = True
         return AnalysisResult(
             conceptual_schema=conceptual,
             physical_mapping=physical,
-            metadata=meta,
+            metadata=pr.metadata.model_copy(update=update),
         )
 
     async def analyze_physical_schema_async(
@@ -826,10 +774,9 @@ class AgenticSchemaAnalyzer:
         if isinstance(prep, AnalysisResult):
             return prep
 
-        errors: list[str] = []
-        warnings: list[str] = []
+        outcome: WorkflowResult | SchemaAnalyzerError
         try:
-            wf = await async_generate_validate_repair(
+            outcome = await async_generate_validate_repair(
                 provider=prep.provider,
                 model=prep.model,
                 system=prep.system,
@@ -837,19 +784,39 @@ class AgenticSchemaAnalyzer:
                 timeout_ms=prep.remaining_ms,
                 max_repair_attempts=prep.max_repair_attempts,
             )
-            data = wf.data
-            repair_attempts = wf.repair_attempts
+        except SchemaAnalyzerError as e:
+            outcome = e
+        return self._finish_llm_analysis(db, prep, outcome, prov=prov, use_cache=use_cache, label="Async LLM workflow")
+
+    def _finish_llm_analysis(
+        self,
+        db: StandardDatabase,
+        prep: _AnalysisContext,
+        outcome: WorkflowResult | SchemaAnalyzerError,
+        *,
+        prov: _ProvenanceStamp,
+        use_cache: bool,
+        label: str,
+    ) -> AnalysisResult:
+        """Shared tail of the sync and async LLM paths, so the two cannot drift apart.
+
+        ``outcome`` is the workflow's answer, or the error it raised. An error raised
+        here while accepting the answer falls back to the baseline the same way.
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
+        try:
+            if isinstance(outcome, SchemaAnalyzerError):
+                raise outcome
+            data = outcome.data
+            repair_attempts = outcome.repair_attempts
             if prep.field_name_map:
                 data = unmask_field_names(data, prep.field_name_map)
             _apply_collection_name_allowlist(data, prep.snapshot, warnings)
             _apply_reconciliation(data, prep.snapshot, warnings)
         except SchemaAnalyzerError as e:
-            logger.warning("Async LLM workflow failed, falling back to baseline: %s", e)
-            baseline = infer_baseline_from_snapshot(
-                prep.snapshot,
-                collection_per_entity=prep.entity_strategy == "collection",
-                multi_label=prep.entity_strategy == "labels",
-            )
+            logger.warning("%s failed, falling back to baseline: %s", label, e)
+            baseline = _infer_baseline(prep.snapshot, prep.entity_strategy)
             data = {
                 "conceptualSchema": baseline.get("conceptualSchema", {}),
                 "physicalMapping": baseline.get("physicalMapping", {}),
@@ -1008,6 +975,7 @@ class AgenticSchemaAnalyzer:
         quality_metrics, health_score = build_quality_block(
             conceptual_schema, physical_mapping, snapshot, confidence, self.gold_reference
         )
+        arango_product, arango_product_status = _arango_product_for(snapshot)
 
         metadata = AnalysisMetadata(
             confidence=confidence,
@@ -1035,8 +1003,8 @@ class AgenticSchemaAnalyzer:
             tenant_scope_report=data.get("metadata", {}).get("tenantScopeReport")
             if isinstance(data.get("metadata"), dict)
             else None,
-            arango_product=_arango_product_dict_for(snapshot),
-            arango_product_status=_arango_product_status_for(snapshot),
+            arango_product=arango_product,
+            arango_product_status=arango_product_status,
             sharding_profile=data.get("metadata", {}).get("shardingProfile")
             if isinstance(data.get("metadata"), dict)
             else None,
@@ -1080,7 +1048,7 @@ class AgenticSchemaAnalyzer:
         if errors:
             logger.info("Not caching a baseline fallback under the LLM cache key")
         elif use_cache and isinstance(self.cache, AnalysisCache):
-            logger.debug("Caching result for cache key prefix %s", cache_storage_key[:16])
+            logger.debug("Caching result for cache key prefix %s", cache_storage_key[:FINGERPRINT_DISPLAY_LENGTH])
             self.cache.set(
                 cache_storage_key,
                 _strip_provenance_for_cache(result.model_dump()),

@@ -113,6 +113,34 @@ def coerce_prior(prior: AnalysisResult | dict[str, Any]) -> AnalysisResult:
     return AnalysisResult(conceptual_schema=conceptual, physical_mapping=physical, metadata=metadata)
 
 
+def revalidated_copy(pr: AnalysisResult) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Carry ``pr`` forward when the shape fingerprint matched the live database.
+
+    The match just revalidated every element (PRD §3.13.2), so the copies are
+    re-stamped, and valid time is carried back along the unbroken chain
+    (fingerprint-continuity, §3.13.5). Copies, so the caller's ``prior`` is
+    never mutated in place. Returns ``(conceptual, physical, metadata_update)``.
+    """
+    completed = now_iso()
+    conceptual = copy.deepcopy(pr.conceptual_schema)
+    physical = copy.deepcopy(pr.physical_mapping)
+    stamp_temporal_provenance({"conceptualSchema": conceptual, "physicalMapping": physical}, now=completed)
+    valid_time, valid_time_source, predecessor = compute_valid_time(
+        completed_at=completed,
+        current_shape_fingerprint=pr.metadata.shape_fingerprint,
+        prior_shape_fingerprint=pr.metadata.shape_fingerprint,
+        prior_valid_from=prior_valid_from(pr.metadata),
+    )
+    update: dict[str, Any] = {
+        "analysis_completed_at": completed,
+        "transaction_time": completed,
+        "valid_time": valid_time,
+        "valid_time_source": valid_time_source,
+        "predecessor_fingerprint": predecessor,
+    }
+    return conceptual, physical, update
+
+
 def refresh_statistics(
     db: StandardDatabase,
     prior: AnalysisResult | dict[str, Any],
@@ -134,31 +162,11 @@ def refresh_statistics(
         logger.warning("stats-only refresh failed to compute statistics: %s", exc)
         stats = None
 
-    completed = now_iso()
-    # Shape fingerprint matched, so the preserved conceptual schema + mapping
-    # were just revalidated against the live database (PRD §3.13.2). Stamp
-    # copies so the caller's ``prior`` is never mutated in place.
-    conceptual = copy.deepcopy(pr.conceptual_schema)
-    physical = copy.deepcopy(pr.physical_mapping)
-    stamp_temporal_provenance({"conceptualSchema": conceptual, "physicalMapping": physical}, now=completed)
-    # §3.13.5: counts moved but shape did not, so the schema definition is unchanged —
-    # valid time is carried back along the unbroken chain (fingerprint-continuity).
-    valid_time, valid_time_source, predecessor = compute_valid_time(
-        completed_at=completed,
-        current_shape_fingerprint=pr.metadata.shape_fingerprint,
-        prior_shape_fingerprint=pr.metadata.shape_fingerprint,
-        prior_valid_from=prior_valid_from(pr.metadata),
-    )
-    update: dict[str, Any] = {
-        "analysis_completed_at": completed,
-        "transaction_time": completed,
-        "counts_fingerprint": fingerprint_physical_counts(db, exclude_collections=exclude_collections),
-        "incremental_refresh": "stats_only",
-        "cache_hit": False,
-        "valid_time": valid_time,
-        "valid_time_source": valid_time_source,
-        "predecessor_fingerprint": predecessor,
-    }
+    # Counts moved but shape did not, so the schema definition is unchanged.
+    conceptual, physical, update = revalidated_copy(pr)
+    update["counts_fingerprint"] = fingerprint_physical_counts(db, exclude_collections=exclude_collections)
+    update["incremental_refresh"] = "stats_only"
+    update["cache_hit"] = False
     if stats is not None:
         update["statistics"] = stats
         update["statistics_status"] = stats.get("status")
