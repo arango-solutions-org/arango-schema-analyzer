@@ -111,6 +111,11 @@ analysis already uses a key now reserved for mapping ids (see below).
   formats now read one table per kind. `diff_analyses` also sees property changes when
   an entity lists its properties as bare names or as a dict keyed by name; it compared
   them as empty before.
+- **`PhysicalMapping.aql_entity_match` reads arango-query-core's `MULTI_LABEL` style**,
+  matched like `LABELS` (`labelValue IN doc[labelsField]`); it raised before.
+  `metadata.statistics` now counts every `LABEL` / `LABELS` / `MULTI_LABEL` entity over
+  the same filter, so the two can no longer disagree. A `LABEL` entity with an empty
+  `typeValue` is now left uncounted (status `partial`) instead of counted.
 
 ## 0.20.0 — 2026-11-16
 
