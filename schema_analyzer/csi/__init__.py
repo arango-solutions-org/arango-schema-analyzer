@@ -286,36 +286,25 @@ def _mint_mapping_ids(doc: dict[str, Any], base: str) -> dict[str, Any]:
     return doc
 
 
-def _uses_path(physical: Any) -> bool:
+def _property_key_used(physical: Any, key: str, kinds: tuple[str, ...]) -> bool:
+    """Whether any property mapping under *kinds* (``entities`` / ``relationships``) carries *key*."""
     if not isinstance(physical, dict):
         return False
-    for kind in ("entities", "relationships"):
+    for kind in kinds:
         specs = physical.get(kind)
         for spec in specs.values() if isinstance(specs, dict) else []:
             props = spec.get("properties") if isinstance(spec, dict) else None
             for entry in props.values() if isinstance(props, dict) else []:
-                if isinstance(entry, dict) and "path" in entry:
+                if isinstance(entry, dict) and key in entry:
                     return True
-    return False
-
-
-def _uses_multi_valued(physical: Any) -> bool:
-    if not isinstance(physical, dict):
-        return False
-    specs = physical.get("entities")
-    for spec in specs.values() if isinstance(specs, dict) else []:
-        props = spec.get("properties") if isinstance(spec, dict) else None
-        for entry in props.values() if isinstance(props, dict) else []:
-            if isinstance(entry, dict) and "multiValued" in entry:
-                return True
     return False
 
 
 def _csi_version_for(physical: Any) -> str:
     """The lowest version whose readers can read *physical*'s property mappings."""
-    if _uses_multi_valued(physical):
+    if _property_key_used(physical, "multiValued", ("entities",)):
         return CSI_VERSION_LISTS
-    return CSI_VERSION_NESTED if _uses_path(physical) else CSI_VERSION
+    return CSI_VERSION_NESTED if _property_key_used(physical, "path", ("entities", "relationships")) else CSI_VERSION
 
 
 def _prefix_unknown_keys(entry: dict[str, Any], allowed: set[str]) -> dict[str, Any]:

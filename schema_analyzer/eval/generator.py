@@ -40,6 +40,19 @@ class PhysicalVariant:
     rel_type_field: str = "relation"
 
 
+def entity_collection_name(prefix: str, entity: str) -> str:
+    """The per-entity document collection a ``COLLECTION``-style variant creates (``User`` -> ``users``).
+
+    ``eval/scoring.py`` builds the expected mapping from this, so the two stay in step.
+    """
+    return f"{prefix}{entity.lower()}s"
+
+
+def relationship_collection_name(prefix: str, rel_type: str) -> str:
+    """The per-type edge collection a ``DEDICATED_COLLECTION``-style variant creates."""
+    return f"{prefix}{rel_type.lower()}"
+
+
 def _rand_id(prefix: str, n: int = 10) -> str:
     return prefix + "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
 
@@ -111,7 +124,7 @@ def materialize_domain_variant(
         for e in entities:
             if not isinstance(e, dict) or "name" not in e:
                 continue
-            c_name = f"{variant.entity_collection_prefix}{e['name'].lower()}s"
+            c_name = entity_collection_name(variant.entity_collection_prefix, e["name"])
             _ensure_collection(db, c_name, edge=False)
             created["collections"]["documents"].append(c_name)
             entity_collections[e["name"]] = c_name
@@ -131,7 +144,7 @@ def materialize_domain_variant(
         for r in rels:
             if not isinstance(r, dict) or "type" not in r:
                 continue
-            c_name = f"{variant.rel_collection_prefix}{r['type'].lower()}"
+            c_name = relationship_collection_name(variant.rel_collection_prefix, r["type"])
             _ensure_collection(db, c_name, edge=True)
             created["collections"]["edges"].append(c_name)
             rel_collections[r["type"]] = c_name
