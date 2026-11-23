@@ -32,38 +32,40 @@ def _read_json(path: str | None) -> dict[str, Any]:
     return cast("dict[str, Any]", json.loads(raw))
 
 
-def _cmd_tool(args: argparse.Namespace) -> int:
-    req = _read_json(args.request)
-    resp = run_tool(req)
-    text = json.dumps(resp, indent=2 if args.pretty else None, sort_keys=True)
-
-    if args.out:
-        Path(args.out).write_text(text + "\n", encoding="utf-8")
-    else:
-        sys.stdout.write(text + "\n")
-    return 0 if resp.get("ok") else TOOL_ERROR_EXIT_CODE
-
-
-def _build_connection(args: argparse.Namespace) -> dict[str, Any]:
-    url = args.url or os.environ.get("ARANGO_URL", os.environ.get("ARANGO_HOST", DEFAULT_ARANGO_URL))
-    database = args.database or os.environ.get("ARANGO_DB", "")
-    if not database:
-        raise SystemExit("A database is required. Pass --database or set ARANGO_DB.")
-    user = args.user or os.environ.get("ARANGO_USER", DEFAULT_ARANGO_USER)
-    conn: dict[str, Any] = {"url": url, "database": database, "username": user}
-    # Prefer an env-var indirection if requested; otherwise inline password.
-    if args.password_env_var:
-        conn["passwordEnvVar"] = args.password_env_var
-    else:
-        conn["password"] = args.password or os.environ.get("ARANGO_PASS", os.environ.get("ARANGO_PASSWORD", ""))
-    return conn
-
-
 def _emit(text: str, out: str | None) -> None:
     if out:
         Path(out).write_text(text + "\n", encoding="utf-8")
     else:
         sys.stdout.write(text + "\n")
+
+
+def _cmd_tool(args: argparse.Namespace) -> int:
+    req = _read_json(args.request)
+    resp = run_tool(req)
+    _emit(json.dumps(resp, indent=2 if args.pretty else None, sort_keys=True), args.out)
+    return 0 if resp.get("ok") else TOOL_ERROR_EXIT_CODE
+
+
+def _url_user_password(args: argparse.Namespace) -> tuple[str, str, str]:
+    """``--url`` / ``--user`` / ``--password``, each falling back to its environment variables."""
+    url = args.url or os.environ.get("ARANGO_URL", os.environ.get("ARANGO_HOST", DEFAULT_ARANGO_URL))
+    user = args.user or os.environ.get("ARANGO_USER", DEFAULT_ARANGO_USER)
+    password = args.password or os.environ.get("ARANGO_PASS", os.environ.get("ARANGO_PASSWORD", ""))
+    return url, user, password
+
+
+def _build_connection(args: argparse.Namespace) -> dict[str, Any]:
+    url, user, password = _url_user_password(args)
+    database = args.database or os.environ.get("ARANGO_DB", "")
+    if not database:
+        raise SystemExit("A database is required. Pass --database or set ARANGO_DB.")
+    conn: dict[str, Any] = {"url": url, "database": database, "username": user}
+    # Prefer an env-var indirection if requested; otherwise inline password.
+    if args.password_env_var:
+        conn["passwordEnvVar"] = args.password_env_var
+    else:
+        conn["password"] = password
+    return conn
 
 
 def _cmd_connect(args: argparse.Namespace) -> int:
@@ -159,9 +161,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         save_eval_report,
     )
 
-    url = args.url or os.environ.get("ARANGO_URL", os.environ.get("ARANGO_HOST", DEFAULT_ARANGO_URL))
-    user = args.user or os.environ.get("ARANGO_USER", DEFAULT_ARANGO_USER)
-    password = args.password or os.environ.get("ARANGO_PASS", os.environ.get("ARANGO_PASSWORD", ""))
+    url, user, password = _url_user_password(args)
     db_name = args.database or os.environ.get("ARANGO_EVAL_DB", DEFAULT_EVAL_DATABASE)
 
     client = ArangoClient(hosts=url)

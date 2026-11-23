@@ -18,6 +18,25 @@ _PROPERTY_MAPPING_SCHEMA: dict[str, Any] = {
     },
 }
 
+#: An entity's or relationship's physical indexes.
+_INDEXES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["type", "fields"],
+        "properties": {
+            "type": {"type": "string"},
+            "fields": {"type": "array", "items": {"type": "string"}},
+            "unique": {"type": "boolean"},
+            "sparse": {"type": "boolean"},
+            "name": {"type": "string"},
+            "vci": {"type": "boolean"},
+            "deduplicate": {"type": "boolean"},
+            "storedValues": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+}
+
 ANALYSIS_OUTPUT_SCHEMA: dict[str, Any] = {
     "$id": "https://arangodb.com/schema-analyzer/analysis-output.schema.json",
     "type": "object",
@@ -75,23 +94,7 @@ ANALYSIS_OUTPUT_SCHEMA: dict[str, Any] = {
                             "labelsField": {"type": "string"},
                             "labelValue": {"type": "string"},
                             "aliases": {"type": "array", "items": {"type": "string"}},
-                            "indexes": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "required": ["type", "fields"],
-                                    "properties": {
-                                        "type": {"type": "string"},
-                                        "fields": {"type": "array", "items": {"type": "string"}},
-                                        "unique": {"type": "boolean"},
-                                        "sparse": {"type": "boolean"},
-                                        "name": {"type": "string"},
-                                        "vci": {"type": "boolean"},
-                                        "deduplicate": {"type": "boolean"},
-                                        "storedValues": {"type": "array", "items": {"type": "string"}},
-                                    },
-                                },
-                            },
+                            "indexes": _INDEXES_SCHEMA,
                             "properties": {
                                 "type": "object",
                                 "additionalProperties": _PROPERTY_MAPPING_SCHEMA,
@@ -110,23 +113,7 @@ ANALYSIS_OUTPUT_SCHEMA: dict[str, Any] = {
                             "edgeCollectionName": {"type": "string"},
                             "typeField": {"type": "string"},
                             "typeValue": {"type": "string"},
-                            "indexes": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "required": ["type", "fields"],
-                                    "properties": {
-                                        "type": {"type": "string"},
-                                        "fields": {"type": "array", "items": {"type": "string"}},
-                                        "unique": {"type": "boolean"},
-                                        "sparse": {"type": "boolean"},
-                                        "name": {"type": "string"},
-                                        "vci": {"type": "boolean"},
-                                        "deduplicate": {"type": "boolean"},
-                                        "storedValues": {"type": "array", "items": {"type": "string"}},
-                                    },
-                                },
-                            },
+                            "indexes": _INDEXES_SCHEMA,
                             "properties": {
                                 "type": "object",
                                 "additionalProperties": _PROPERTY_MAPPING_SCHEMA,
