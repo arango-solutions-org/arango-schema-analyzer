@@ -104,6 +104,11 @@ analysis already uses a key now reserved for mapping ids (see below).
   `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
   threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
   expire at once.
+- **`PhysicalMapping.aql_entity_match` reads arango-query-core's `MULTI_LABEL` style**,
+  matched like `LABELS` (`labelValue IN doc[labelsField]`); it raised before.
+  `metadata.statistics` now counts every `LABEL` / `LABELS` / `MULTI_LABEL` entity over
+  the same filter, so the two can no longer disagree. A `LABEL` entity with an empty
+  `typeValue` is now left uncounted (status `partial`) instead of counted.
 
 ## 0.20.0 — 2026-11-16
 
