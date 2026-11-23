@@ -33,6 +33,7 @@ from .defaults import (
     GRAPHRAG_TEXT_FIELDS,
     GRAPHRAG_VECTOR_INDEX_TYPES,
 )
+from .utils import observed_field_names
 
 logger = logging.getLogger(__name__)
 
@@ -40,22 +41,6 @@ _CHUNK_NAME_RE = tuple(re.compile(p) for p in GRAPHRAG_CHUNK_NAME_PATTERNS)
 _ENTITY_NAME_RE = tuple(re.compile(p) for p in GRAPHRAG_ENTITY_NAME_PATTERNS)
 _SIM_NAME_RE = tuple(re.compile(p) for p in GRAPHRAG_SIMILARITY_EDGE_NAME_PATTERNS)
 _MENTION_NAME_RE = tuple(re.compile(p) for p in GRAPHRAG_MENTION_EDGE_NAME_PATTERNS)
-
-
-def _observed_field_names(entry: dict[str, Any]) -> set[str]:
-    observed = entry.get("observed_fields")
-    names: set[str] = set()
-    if not isinstance(observed, dict):
-        return names
-    fields = observed.get("fields")
-    if isinstance(fields, list):
-        names.update(f for f in fields if isinstance(f, str))
-    by_type = observed.get("by_type")
-    if isinstance(by_type, dict):
-        for field_list in by_type.values():
-            if isinstance(field_list, list):
-                names.update(f for f in field_list if isinstance(f, str))
-    return names
 
 
 def _matches(name: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
@@ -126,7 +111,7 @@ def detect_graphrag(data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str,
         name = entry["name"]
         if name.startswith("_"):
             continue
-        fields = _observed_field_names(entry)
+        fields = observed_field_names(entry)
         is_edge = entry.get("type") == "edge"
 
         vec_fields = _has_vector_index(entry)

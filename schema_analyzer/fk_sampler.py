@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ._arango import aql_first
 from .defaults import FK_MAX_PROBES, FK_PROBE_SAMPLE_SIZE
 
 logger = logging.getLogger(__name__)
@@ -147,26 +148,23 @@ class ArangoValueSampler:
         }
         value_expr = "TO_STRING(d[@localField])" if foreign_field in _IDENTITY_FIELDS else "d[@localField]"
 
+        what = f"fk containment probe for {local_collection}.{local_field} -> {foreign_collection}.{foreign_field}"
+
         def probe(aql: str) -> float | None:
             """Run one containment probe, spending one unit of budget."""
             self.probes += 1
-            try:
-                cursor = self._db.aql.execute(aql.format(value=value_expr), bind_vars=bind_vars)
-                rows = list(cursor)
-            except Exception as err:  # noqa: BLE001
-                logger.warning(
-                    "fk containment probe failed for %s.%s -> %s.%s: %s",
-                    local_collection,
-                    local_field,
-                    foreign_collection,
-                    foreign_field,
-                    err,
-                )
-                return None
-            if not rows or rows[0] is None:
+            row = aql_first(
+                self._db,
+                aql.format(value=value_expr),
+                bind_vars,
+                log=logger,
+                what=what,
+                level=logging.WARNING,
+            )
+            if row is None:
                 return None
             try:
-                return max(0.0, min(1.0, float(rows[0])))
+                return max(0.0, min(1.0, float(row)))
             except (TypeError, ValueError):
                 return None
 

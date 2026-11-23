@@ -50,7 +50,6 @@ nothing — see :func:`schema_analyzer.analyzer._apply_shard_families`).
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import Any
 
@@ -59,7 +58,7 @@ from .defaults import (
     MIN_SHARD_FAMILY_SUFFIX_LEN,
     SHARD_FAMILY_DISCRIMINATOR_FIELDS,
 )
-from .utils import entity_property_names
+from .utils import entity_property_names, sha256_hex
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +159,7 @@ def _bucket_hash(prop_names: list[str]) -> str:
     property name makes the hash collision-free across pathological
     cases like ``["ab", "c"]`` vs ``["a", "bc"]``.
     """
-    payload = "\u0000".join(prop_names).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return sha256_hex("\u0000".join(prop_names))
 
 
 def _resolve_discriminator(

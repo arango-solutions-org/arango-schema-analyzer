@@ -40,14 +40,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from .utils import SYSTEM_FIELDS, collections_by_name
+
 #: The key a property mapping (and a conceptual property) carries when its
 #: attribute holds a list, one value per element.
 MULTI_VALUED_KEY = "multiValued"
 
 #: Index types whose field holds one value even though it is stored as an array.
 _ONE_VALUE_INDEX_TYPES = frozenset({"geo", "geo1", "geo2", "vector"})
-
-_SYSTEM_FIELDS = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 
 
 def classify_list(value: Any) -> str | None:
@@ -65,7 +65,7 @@ def list_fields_of(docs: Iterable[Any], *, exclude: Iterable[str] = ()) -> list[
 
     An attribute that any document holds as a list of objects or of lists is left out.
     """
-    excluded = set(_SYSTEM_FIELDS) | set(exclude)
+    excluded = set(SYSTEM_FIELDS) | set(exclude)
     scalars: set[str] = set()
     structures: set[str] = set()
     for doc in docs:
@@ -130,11 +130,10 @@ def apply_list_values(data: dict[str, Any], snapshot: dict[str, Any]) -> int:
     of a database without lists is unchanged.
     """
     by_collection: dict[str, set[str]] = {}
-    for col in snapshot.get("collections") or []:
-        if isinstance(col, dict) and isinstance(col.get("name"), str):
-            fields = observed_list_fields(col)
-            if fields:
-                by_collection[col["name"]] = fields
+    for name, col in collections_by_name(snapshot).items():
+        fields = observed_list_fields(col)
+        if fields:
+            by_collection[name] = fields
     if not by_collection:
         return 0
 

@@ -25,10 +25,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from .utils import SYSTEM_FIELDS, collections_by_name, observed_field_names
+
 #: Deepest look into nested objects a caller may request (levels below the top).
 MAX_NESTED_FIELD_DEPTH = 5
-
-_SYSTEM_FIELDS = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 
 Location = tuple[str, ...]
 
@@ -65,7 +65,7 @@ def walk_document(
     skipped: set[Location] = set()
     if not isinstance(doc, dict):
         return top, nested, skipped
-    excluded = set(_SYSTEM_FIELDS) | set(exclude)
+    excluded = set(SYSTEM_FIELDS) | set(exclude)
 
     def visit(value: Any, prefix: Location, levels_left: int) -> None:
         if isinstance(value, list):
@@ -158,13 +158,7 @@ def _collection_nested(col: dict[str, Any]) -> tuple[set[Location], set[str], se
         for raw in bucket or []:
             if isinstance(raw, list) and len(raw) > 1 and all(isinstance(s, str) and s for s in raw):
                 paths.add(tuple(raw))
-    top: set[str] = set()
-    if isinstance(observed.get("fields"), list):
-        top.update(f for f in observed["fields"] if isinstance(f, str))
-    for bucket in (observed.get("by_type") or {}).values():
-        if isinstance(bucket, list):
-            top.update(f for f in bucket if isinstance(f, str))
-    return paths, top, conflicted_names(observed)
+    return paths, observed_field_names(col), conflicted_names(observed)
 
 
 def _drop_conceptual_properties(data: dict[str, Any], removed: list[dict[str, Any]]) -> None:
@@ -207,15 +201,12 @@ def apply_field_locations(data: dict[str, Any], snapshot: dict[str, Any]) -> dic
     if depth <= 0:
         return None
 
-    by_collection: dict[str, dict[str, Any]] = {}
-    for col in snapshot.get("collections") or []:
-        if isinstance(col, dict) and isinstance(col.get("name"), str):
-            by_collection[col["name"]] = col
+    by_collection = collections_by_name(snapshot)
 
     conflicts: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for coll_name, col in sorted(by_collection.items()):
-        observed = col.get("observed_fields") or {}
+    for coll_name, coll_entry in sorted(by_collection.items()):
+        observed = coll_entry.get("observed_fields") or {}
         if not isinstance(observed, dict):
             continue
         for conflict in observed.get("nested_conflicts") or []:

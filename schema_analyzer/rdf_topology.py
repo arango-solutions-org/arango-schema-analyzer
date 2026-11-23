@@ -29,27 +29,11 @@ from .defaults import (
     RDF_TRIPLE_FIELD_SIGNATURES,
     RDF_TYPE_PREDICATE_VALUES,
 )
+from .utils import SYSTEM_FIELDS, observed_field_names
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_FIELDS = frozenset({"_key", "_id", "_rev", "_from", "_to"})
 _NAME_PATTERNS = tuple(re.compile(p) for p in RDF_TRIPLE_COLLECTION_NAME_PATTERNS)
-
-
-def _observed_field_names(entry: dict[str, Any]) -> set[str]:
-    observed = entry.get("observed_fields")
-    names: set[str] = set()
-    if not isinstance(observed, dict):
-        return names
-    fields = observed.get("fields")
-    if isinstance(fields, list):
-        names.update(f for f in fields if isinstance(f, str))
-    by_type = observed.get("by_type")
-    if isinstance(by_type, dict):
-        for field_list in by_type.values():
-            if isinstance(field_list, list):
-                names.update(f for f in field_list if isinstance(f, str))
-    return names
 
 
 def _name_matches_triple(name: str) -> bool:
@@ -57,7 +41,7 @@ def _name_matches_triple(name: str) -> bool:
 
 
 def _field_signature(fields: set[str]) -> frozenset[str] | None:
-    bare = fields - _SYSTEM_FIELDS
+    bare = fields - SYSTEM_FIELDS
     for sig in RDF_TRIPLE_FIELD_SIGNATURES:
         if sig <= bare:
             return sig
@@ -105,14 +89,14 @@ def detect_rdf_topology(data: dict[str, Any], snapshot: dict[str, Any]) -> dict[
         # matches a triple pattern (e.g. a literally-named ``_triples``).
         if name.startswith("_") and not name_match:
             continue
-        fields = _observed_field_names(entry)
+        fields = observed_field_names(entry)
         sig = _field_signature(fields)
         if sig is not None or name_match:
             triple_collections.append(
                 {
                     "collection": name,
                     "signature": "_".join(sorted(sig)) if sig else "name_match",
-                    "fields": sorted(fields - _SYSTEM_FIELDS),
+                    "fields": sorted(fields - SYSTEM_FIELDS),
                 }
             )
             triple_collection_names.add(name)

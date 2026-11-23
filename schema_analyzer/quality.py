@@ -155,38 +155,46 @@ def compute_grounding_metrics(
     }
 
 
-def _gold_norm(s: str) -> str:
+def normalize_name(s: str) -> str:
+    """*s* lowercased, stripped to ``[a-z0-9_]`` (``-`` becomes ``_``) and singularized.
+
+    The one name normalization for gold comparison here and for the eval scorer
+    (``eval/scoring.py``), so ``Users`` matches ``user`` in both.
+    """
     x = "".join(ch.lower() for ch in s if ch.isalnum() or ch in ("_", "-")).replace("-", "_")
     return singularize(x)
 
 
-def _name_set(items: Any, key: str) -> set[str]:
+def name_set(items: Any, key: str) -> set[str]:
+    """The normalized non-empty string ``key`` values of the dicts in the list *items*."""
     out: set[str] = set()
     if isinstance(items, list):
         for it in items:
             if isinstance(it, dict) and isinstance(it.get(key), str) and it[key]:
-                out.add(_gold_norm(it[key]))
+                out.add(normalize_name(it[key]))
     return out
 
 
-def _entity_name_set(conceptual: dict[str, Any], *, include_labels: bool) -> set[str]:
+def entity_name_set(data: dict[str, Any], *, include_labels: bool) -> set[str]:
+    """The normalized entity names in *data* (plus each entity's ``labels`` if asked)."""
     out: set[str] = set()
-    for e in conceptual.get("entities", []) or []:
+    entities = data.get("entities")
+    for e in entities if isinstance(entities, list) else []:
         if not isinstance(e, dict):
             continue
         if isinstance(e.get("name"), str) and e["name"]:
-            out.add(_gold_norm(e["name"]))
+            out.add(normalize_name(e["name"]))
         if include_labels and isinstance(e.get("labels"), list):
-            out.update(_gold_norm(x) for x in e["labels"] if isinstance(x, str) and x)
+            out.update(normalize_name(x) for x in e["labels"] if isinstance(x, str) and x)
     return out
 
 
-def _prf(pred: set[str], truth: set[str]) -> dict[str, float]:
+def prf(pred: set[str], truth: set[str], *, ndigits: int | None = None) -> dict[str, float]:
     """Precision / recall / F1 of ``pred`` against ``truth`` (gold).
 
-    Degenerate cases mirror the eval scorer: empty/empty is perfect; an empty
-    gold set yields recall 1.0 / precision 0.0; an empty prediction yields
-    precision 1.0 / recall 0.0.
+    Degenerate cases: empty/empty is perfect; an empty gold set yields recall
+    1.0 / precision 0.0; an empty prediction yields precision 1.0 / recall 0.0.
+    ``ndigits`` rounds the three values (the eval scorer keeps them unrounded).
     """
     if not pred and not truth:
         return {"precision": 1.0, "recall": 1.0, "f1": 1.0}
@@ -198,7 +206,9 @@ def _prf(pred: set[str], truth: set[str]) -> dict[str, float]:
     p = tp / len(pred)
     r = tp / len(truth)
     f1 = (2 * p * r / (p + r)) if (p + r) else 0.0
-    return {"precision": round(p, 4), "recall": round(r, 4), "f1": round(f1, 4)}
+    if ndigits is not None:
+        p, r, f1 = round(p, ndigits), round(r, ndigits), round(f1, ndigits)
+    return {"precision": p, "recall": r, "f1": f1}
 
 
 def compute_gold_comparison(conceptual: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
@@ -213,14 +223,14 @@ def compute_gold_comparison(conceptual: dict[str, Any], reference: dict[str, Any
     Returns per-category PRF plus an ``overlap`` scalar (mean of entity F1 and
     relationship-type F1) suitable for folding into the health score.
     """
-    pred_entities = _entity_name_set(conceptual, include_labels=True)
-    truth_entities = _name_set(reference.get("entities"), "name")
+    pred_entities = entity_name_set(conceptual, include_labels=True)
+    truth_entities = name_set(reference.get("entities"), "name")
 
-    pred_rels = _name_set(conceptual.get("relationships"), "type")
-    truth_rels = _name_set(reference.get("relationships"), "type")
+    pred_rels = name_set(conceptual.get("relationships"), "type")
+    truth_rels = name_set(reference.get("relationships"), "type")
 
-    entities = _prf(pred_entities, truth_entities)
-    relationships = _prf(pred_rels, truth_rels)
+    entities = prf(pred_entities, truth_entities, ndigits=4)
+    relationships = prf(pred_rels, truth_rels, ndigits=4)
     overlap = round((entities["f1"] + relationships["f1"]) / 2.0, 4)
 
     return {

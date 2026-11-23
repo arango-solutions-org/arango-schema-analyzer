@@ -104,6 +104,23 @@ analysis already uses a key now reserved for mapping ids (see below).
   `value or DEFAULT`, so 0, which the request schema allows, became 0.6 and 86400. A
   threshold of 0 now flags review only on errors, and a TTL of 0 makes a cached result
   expire at once.
+- **The OWL exports carry the same `phys:` annotations, and Turtle declares all of them.**
+  The annotations were listed by hand three times and had drifted: JSON-LD left out a
+  relationship's `phys:typeField` / `phys:typeValue`, which Turtle wrote, and Turtle
+  wrote `phys:observedCardinality` without declaring it as an annotation property. Both
+  formats now read one table per kind. `diff_analyses` also sees property changes when
+  an entity lists its properties as bare names or as a dict keyed by name; it compared
+  them as empty before.
+- **`PhysicalMapping.aql_entity_match` reads arango-query-core's `MULTI_LABEL` style**,
+  matched like `LABELS` (`labelValue IN doc[labelsField]`); it raised before.
+  `metadata.statistics` now counts every `LABEL` / `LABELS` / `MULTI_LABEL` entity over
+  the same filter, so the two can no longer disagree. A `LABEL` entity with an empty
+  `typeValue` is now left uncounted (status `partial`) instead of counted.
+- **Named-graph collections are read one way everywhere.** When one edge collection is
+  declared in two named graphs with different endpoints, baseline inference now takes
+  the endpoints from the first graph by name, as the sharding profile already did (it
+  took the last). An empty collection name in a graph definition is ignored by graph
+  membership and graph scoping, as the sharding profile already ignored it.
 - **The snapshot no longer samples documents it then discards.** With
   `sampleLimitPerCollection` above 0 and `includeSamplesInSnapshot` false, it ran a
   `LIMIT` query of up to that many documents on every collection and threw the rows

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .utils import iter_edge_definitions
+from .utils import graph_collections
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +34,8 @@ def _graph_collections(snapshot: dict[str, Any]) -> dict[str, dict[str, set[str]
     for g in snapshot.get("graphs_detailed") or []:
         if not isinstance(g, dict) or not isinstance(g.get("name"), str) or not g["name"]:
             continue
-        name = g["name"]
-        vertices: set[str] = set()
-        edges: set[str] = set()
-        for ed in iter_edge_definitions(g):
-            edges.add(str(ed["collection"]))
-            for side in ("from", "to"):
-                vals = ed.get(side)
-                if isinstance(vals, list):
-                    vertices.update(v for v in vals if isinstance(v, str))
-        orphans = g.get("orphan_collections")
-        if isinstance(orphans, list):
-            vertices.update(v for v in orphans if isinstance(v, str))
-        out[name] = {"vertex": vertices, "edge": edges}
+        vertices, edges = graph_collections(g)
+        out[g["name"]] = {"vertex": vertices, "edge": edges}
     return out
 
 

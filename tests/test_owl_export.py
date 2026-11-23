@@ -166,6 +166,89 @@ def test_owl_tool_op_jsonld_format():
 
 
 # ---------------------------------------------------------------------------
+# phys: annotations — one table feeds the declarations, Turtle and JSON-LD, so the
+# two formats carry the same annotations and Turtle declares every one it writes.
+# ---------------------------------------------------------------------------
+
+_EVERY_ANNOTATION = {
+    "conceptualSchema": {
+        "entities": [
+            {"name": "User", "properties": [{"name": "city"}, {"name": "tags"}, {"name": "first name"}]},
+            {"name": "Doc"},
+            {"name": "Chunk"},
+        ],
+        "relationships": [
+            {"type": "WROTE", "fromEntity": "User", "toEntity": "Doc"},
+            {"type": "FOLLOWS", "fromEntity": "User", "toEntity": "User"},
+        ],
+    },
+    "physicalMapping": {
+        "entities": {
+            "User": {
+                "style": "COLLECTION",
+                "collectionName": "users",
+                "properties": {
+                    "city": {"path": ["address", "city"]},
+                    "tags": {"multiValued": True},
+                    "first name": {"field": "fn"},
+                },
+            },
+            "Doc": {"style": "LABEL", "collectionName": "nodes", "typeField": "type", "typeValue": "doc"},
+            "Chunk": {"style": "LABELS", "collectionName": "nodes", "labelsField": "labels", "labelValue": "chunk"},
+        },
+        "relationships": {
+            "WROTE": {
+                "style": "GENERIC_WITH_TYPE",
+                "edgeCollectionName": "edges",
+                "typeField": "relation",
+                "typeValue": "wrote",
+            },
+            "FOLLOWS": {"style": "DEDICATED_COLLECTION", "edgeCollectionName": "follows"},
+        },
+    },
+    "metadata": {"statistics": {"relationships": {"WROTE": {"cardinality_pattern": "1:N"}}}},
+}
+
+
+def _turtle_phys_annotations(ttl: str) -> set[tuple[str, str, str]]:
+    base, phys = _ns()
+    return {
+        (str(s)[len(str(base)) :], str(p)[len(str(phys)) :], str(o))
+        for s, p, o in _graph(ttl)
+        if str(p).startswith(str(phys))
+    }
+
+
+def test_turtle_declares_every_phys_annotation_it_writes():
+    from rdflib import OWL, RDF
+
+    _, phys = _ns()
+    g = _graph(export_conceptual_model_as_owl_turtle(_EVERY_ANNOTATION))
+    used = {p for _, p, _ in g if str(p).startswith(str(phys))}
+    assert phys.observedCardinality in used
+    assert phys.typeField in used and phys.labelValue in used and phys.attributePath in used
+    undeclared = {p for p in used if (p, RDF.type, OWL.AnnotationProperty) not in g}
+    assert not undeclared
+
+
+def test_jsonld_carries_a_relationships_type_discriminator():
+    by_id = {n["@id"]: n for n in export_conceptual_model_as_jsonld(_EVERY_ANNOTATION)["@graph"]}
+    assert by_id["WROTE"]["phys:typeField"] == "relation"
+    assert by_id["WROTE"]["phys:typeValue"] == "wrote"
+    assert "phys:typeField" not in by_id["FOLLOWS"]
+
+
+def test_jsonld_and_turtle_carry_the_same_phys_annotations():
+    jsonld = {
+        (node["@id"], key.removeprefix("phys:"), value)
+        for node in export_conceptual_model_as_jsonld(_EVERY_ANNOTATION)["@graph"]
+        for key, value in node.items()
+        if key.startswith("phys:")
+    }
+    assert jsonld == _turtle_phys_annotations(export_conceptual_model_as_owl_turtle(_EVERY_ANNOTATION))
+
+
+# ---------------------------------------------------------------------------
 # Datatype properties (issue #13: the export had classes and relationships but
 # no field at all — prod.demo IAM: 1,576 properties, 0 owl:DatatypeProperty)
 # ---------------------------------------------------------------------------
