@@ -63,8 +63,10 @@ Do not flag or suggest simplifying away any of these, even when they read as
 These look like reuse misses and are not. Merging them would break convergence
 with sibling repositories or a published contract:
 
-- **Two `singularize` functions** (`utils.singularize` and
-  `csi.naming.singularize`) with different rules on purpose; see `pr-review`.
+- **One singularizer, two names.** `utils.singularize` delegates to
+  `csi.naming.singularize` (since r2g-arango#30); keep the delegation. The rules
+  themselves are shared with relational-schema-analyzer and r2g through the
+  vendored known-answers list below.
 - **`fk_inference.py`** is a hand port of relational-schema-analyzer's FK
   engine; every divergence is marked `ARANGO:`. Simplify it in both places or
   not at all.
@@ -130,3 +132,30 @@ positive examples, then anything checked and deliberately left alone.
 
 ## History
 (Append one entry per audit: date, what was found, what was fixed and where.)
+
+- **2026-11-23, first whole-repo audit** (main at `c2fd34b` + this skill; three
+  parallel reviewers, every finding below re-confirmed by command). Nothing fixed
+  yet. Duplications that have already changed behaviour:
+  - `analyzer.py`'s no-LLM path (`_prepare_analysis`) copies `_build_result`'s
+    enrichment list and lacks `_apply_tenant_scope`, so the default path returns
+    no `tenantScope` / `tenantScopeReport`.
+  - `diff._health_score` and `csi._settle_property_mappings` read camelCase
+    metadata only, while `normalize_analysis_dict` dumps an `AnalysisResult`
+    with snake_case keys; two `_meta_get` copies (`metric_history.py`,
+    `csi/__init__.py`) already solve this.
+  - `tool.py` uses `x or DEFAULT` for `reviewThreshold` / `cacheTtlSeconds`,
+    turning a valid `0` into the default.
+  - `incremental.refresh_statistics` recomputes the counts fingerprint without
+    `exclude_collections`, so the next run reports `stats_changed`.
+  - `owl_export.py` lists `phys:` annotations three times; JSON-LD drops a
+    relationship's `typeField` / `typeValue`, and `observedCardinality` is used
+    but never declared.
+  - `statistics.py` re-dispatches on mapping style instead of using
+    `aql_entity_match`, and the two already disagree on `MULTI_LABEL`.
+  - `baseline.py` builds its own edge-collection → definition map (last graph
+    wins) while `utils.index_edge_definitions_by_collection` (first wins) has
+    only test callers.
+  Lower: sync/async analyze bodies copied; snapshot phase 5 samples and discards
+  when samples aren't kept; `_observed_field_names` ×3 (vci, graphrag,
+  rdf_topology); graph vertex/edge sets built four ways; `quality.py`'s gold
+  scorer mirrors `eval/scoring.py`; the dead `entityStrategy` check in `tool.py`.
