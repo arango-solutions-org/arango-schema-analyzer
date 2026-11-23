@@ -85,6 +85,13 @@ analysis already uses a key now reserved for mapping ids (see below).
   camelCase keys; `diff` and `csi` also read the snake_case name of a hand-built dict
   (one shared `utils.meta_get` replaces two private copies). The JSON tool contract was
   not affected.
+- **`analyze_incremental(exclude_collections=...)` no longer re-analyzes every run.**
+  The change state was compared with the exclusion, but the result stored fingerprints
+  without it: a full re-analysis kept whole-database fingerprints, and
+  `refresh_statistics` recomputed the counts fingerprint without the exclusion. So the
+  next run always saw a change, often only in the excluded collection. A full
+  re-analysis now keeps the fingerprints it was compared with, and `refresh_statistics`
+  takes `exclude_collections`.
 - **`metadata.statistics` survives polymorphic relationships.** A relationship whose
   endpoint is a list of labels (`fromEntity: ["Post", "Comment"]`, or the physical
   mapping's `domain`/`range`) was looked up as a dict key: `TypeError`, the whole
