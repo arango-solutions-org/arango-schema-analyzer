@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ._arango import aql_first
 from .utils import normalize_analysis_dict
 
 logger = logging.getLogger(__name__)
@@ -183,31 +184,27 @@ RETURN {
 
 
 def _key_containment_ratio(db: Any, child: str, parent: str, sample: int = 200) -> float | None:
-    try:
-        rows = list(
-            db.aql.execute(
-                _CONTAINMENT_AQL,
-                bind_vars={"@child": child, "parent": parent, "sample": sample},
-            )
-        )
-    except Exception as err:  # noqa: BLE001
-        logger.warning("key containment probe failed for %s in %s: %s", child, parent, err)
-        return None
-    return None if not rows or rows[0] is None else float(rows[0])
+    row = aql_first(
+        db,
+        _CONTAINMENT_AQL,
+        {"@child": child, "parent": parent, "sample": sample},
+        log=logger,
+        what=f"key containment probe for {child} in {parent}",
+        level=logging.WARNING,
+    )
+    return None if row is None else float(row)
 
 
 def _specialization_counts(db: Any, parent: str, children: list[str], sample: int = 200) -> dict[str, int] | None:
-    try:
-        rows = list(
-            db.aql.execute(
-                _SPECIALIZATION_AQL,
-                bind_vars={"@parent": parent, "children": children, "sample": sample},
-            )
-        )
-    except Exception as err:  # noqa: BLE001
-        logger.warning("specialization probe failed for %s: %s", parent, err)
-        return None
-    return rows[0] if rows and isinstance(rows[0], dict) else None
+    row = aql_first(
+        db,
+        _SPECIALIZATION_AQL,
+        {"@parent": parent, "children": children, "sample": sample},
+        log=logger,
+        what=f"specialization probe for {parent}",
+        level=logging.WARNING,
+    )
+    return row if isinstance(row, dict) else None
 
 
 def discover(

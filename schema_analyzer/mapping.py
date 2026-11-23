@@ -6,7 +6,14 @@ from typing import Any, Literal
 from .errors import SchemaAnalyzerError
 from .utils import assert_aql_identifier
 
-EntityMappingStyle = Literal["COLLECTION", "LABEL", "LABELS"]
+EntityMappingStyle = Literal[
+    "COLLECTION",
+    "LABEL",
+    "LABELS",
+    # arango-query-core's parent type over the same label array as LABELS (one field set,
+    # #36). Read, never emitted: the output schemas list only the three styles above.
+    "MULTI_LABEL",
+]
 RelationshipMappingStyle = Literal[
     "DEDICATED_COLLECTION",
     "GENERIC_WITH_TYPE",
@@ -102,14 +109,15 @@ class PhysicalMapping:
                 "bind_vars": bind_vars,
             }
 
-        if style == "LABELS":
+        if style in ("LABELS", "MULTI_LABEL"):
             # Labels held in an array field of a shared collection (a node may carry several).
+            # MULTI_LABEL (arango-query-core's supertype) is matched the same way, by its label.
             collection_name = mapping.get("collectionName")
             labels_field = mapping.get("labelsField")
             label = mapping.get("labelValue") or entity_type
             if not (collection_name and labels_field):
                 raise SchemaAnalyzerError(
-                    f"LABELS mapping requires collectionName, labelsField for: {entity_type}",
+                    f"{style} mapping requires collectionName, labelsField for: {entity_type}",
                     code="INVALID_MAPPING",
                 )
             bind_vars["@collection"] = collection_name

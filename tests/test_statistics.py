@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import pytest
 
+from schema_analyzer.mapping import PhysicalMapping
 from schema_analyzer.statistics import (
     CARDINALITY_THRESHOLD,
     STATISTICS_STATUS_OK,
+    STATISTICS_STATUS_PARTIAL,
     STATISTICS_STATUS_SKIPPED_NO_DB,
     _classify_cardinality,
     compute_statistics,
@@ -41,7 +43,7 @@ class _FakeCursor:
 
 
 class _FakeAQL:
-    """Minimal AQL shim that recognises the two queries ``statistics.py`` issues."""
+    """Minimal AQL shim that recognises the queries ``statistics.py`` issues."""
 
     def __init__(self, totals: dict[str, int], filtered: dict[tuple[str, str, object], int]):
         self._totals = totals
@@ -54,6 +56,11 @@ class _FakeAQL:
         if "LENGTH(@@c)" in query:
             col = bv["@c"]
             return _FakeCursor([self._totals[col]])
+        if "COLLECT WITH COUNT" in query and "@@collection" in query:
+            # An entity count, over PhysicalMapping.aql_entity_match's fragment.
+            field = bv.get("typeField") or bv["labelsField"]
+            key = (bv["@collection"], field, bv.get("typeValue") or bv["label"])
+            return _FakeCursor([self._filtered[key]])
         if "COLLECT WITH COUNT" in query:
             key = (bv["@c"], bv["field"], bv["val"])
             return _FakeCursor([self._filtered[key]])
@@ -203,7 +210,7 @@ def test_compute_statistics_labels_style_entity_counts_its_label_only() -> None:
     assert out is not None
     assert out["entities"]["FinAccount"]["estimated_count"] == 25
     assert out["entities"]["Order"]["estimated_count"] == 15
-    assert any("@val IN d[@field]" in q for q, _ in db.aql.calls)
+    assert any("FILTER @label IN d[@labelsField]" in q for q, _ in db.aql.calls)
 
 
 def test_compute_statistics_generic_with_type_uses_filtered_edge_count() -> None:
@@ -456,3 +463,39 @@ def test_a_multi_label_supertype_counts_its_label_like_labels() -> None:
     }
     out = compute_statistics(db, {"collections": [{"name": "nodes", "type": "document"}]}, mapping, {})
     assert out["entities"]["Message"]["estimated_count"] == 50  # not the collection's 90
+
+
+def test_label_entities_are_counted_over_aql_entity_match() -> None:
+    # The entity filter is built in one place, PhysicalMapping.aql_entity_match; statistics
+    # used to rebuild it, and the two disagreed on MULTI_LABEL.
+    entities = {
+        "Person": {"style": "LABEL", "collectionName": "nodes", "typeField": "_type", "typeValue": "Person"},
+        "Order": {"style": "LABELS", "collectionName": "nodes", "labelsField": "labels"},
+        "Message": {"style": "MULTI_LABEL", "collectionName": "nodes", "labelsField": "labels"},
+    }
+    db = _FakeDB(
+        {"nodes": 90},
+        {("nodes", "_type", "Person"): 10, ("nodes", "labels", "Order"): 20, ("nodes", "labels", "Message"): 30},
+    )
+    out = compute_statistics(
+        db, {"collections": [{"name": "nodes", "type": "document"}]}, {"entities": entities, "relationships": {}}
+    )
+    assert out["status"] == STATISTICS_STATUS_OK
+    assert {k: v["estimated_count"] for k, v in out["entities"].items()} == {"Person": 10, "Order": 20, "Message": 30}
+    pm = PhysicalMapping(entities=entities)
+    for name in entities:
+        match = pm.aql_entity_match(variable="d", entity_type=name)
+        assert (f"{match['query']} COLLECT WITH COUNT INTO c RETURN c", match["bind_vars"]) in db.aql.calls
+
+
+def test_an_incomplete_label_mapping_is_uncounted_not_fatal() -> None:
+    # aql_entity_match rejects a LABEL mapping without its typeValue: the entity has no
+    # count and the block is partial, as before.
+    db = _FakeDB({"nodes": 90})
+    mapping = {
+        "entities": {"Person": {"style": "LABEL", "collectionName": "nodes", "typeField": "_type"}},
+        "relationships": {},
+    }
+    out = compute_statistics(db, {"collections": [{"name": "nodes", "type": "document"}]}, mapping, {})
+    assert out["status"] == STATISTICS_STATUS_PARTIAL
+    assert "Person" not in out["entities"]

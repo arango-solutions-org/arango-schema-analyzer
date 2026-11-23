@@ -1,5 +1,6 @@
 import pytest
 
+from schema_analyzer.errors import SchemaAnalyzerError
 from schema_analyzer.mapping import PhysicalMapping
 
 
@@ -78,3 +79,23 @@ def test_aql_entity_match_labels_reads_label_value():
     )
     out = pm.aql_entity_match(variable="n", entity_type="FinAccount")
     assert out["bind_vars"]["label"] == "FIN_ACCOUNT"
+
+
+def test_aql_entity_match_multi_label():
+    # arango-query-core's MULTI_LABEL supertype shares LABELS' field set and match (#36).
+    pm = PhysicalMapping(
+        entities={
+            "Message": {"style": "MULTI_LABEL", "collectionName": "nodes", "labelsField": "labels"},
+            "Post": {"style": "MULTI_LABEL", "collectionName": "nodes", "labelsField": "labels", "labelValue": "POST"},
+        }
+    )
+    out = pm.aql_entity_match(variable="n", entity_type="Message")
+    assert out["query"] == "FOR n IN @@collection FILTER @label IN n[@labelsField]"
+    assert out["bind_vars"] == {"@collection": "nodes", "labelsField": "labels", "label": "Message"}
+    assert pm.aql_entity_match(variable="n", entity_type="Post")["bind_vars"]["label"] == "POST"
+
+
+def test_aql_entity_match_multi_label_requires_labels_field():
+    pm = PhysicalMapping(entities={"Message": {"style": "MULTI_LABEL", "collectionName": "nodes"}})
+    with pytest.raises(SchemaAnalyzerError, match="MULTI_LABEL mapping requires"):
+        pm.aql_entity_match(variable="n", entity_type="Message")
