@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from schema_analyzer.owl_export import (
     export_conceptual_model_as_jsonld,
     export_conceptual_model_as_owl_turtle,
@@ -396,3 +399,13 @@ def test_the_jsonld_export_carries_the_same_datatype_properties():
 def test_a_schema_without_fields_exports_as_before():
     ttl = export_conceptual_model_as_owl_turtle(_SAMPLE)
     assert "owl:DatatypeProperty" not in ttl
+
+
+def test_the_owl_design_doc_declares_every_annotation_property():
+    """docs/OWL-FOR-CONCEPTUAL-SCHEMA.md lists the same ``phys:`` annotation
+    properties the Turtle header declares, so the two cannot drift apart again."""
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "OWL-FOR-CONCEPTUAL-SCHEMA.md").read_text()
+    declared_in_doc = re.findall(r"^phys:(\w+) a owl:AnnotationProperty \.$", doc, flags=re.M)
+    header = export_conceptual_model_as_owl_turtle(_SAMPLE)
+    declared_by_export = re.findall(r"^phys:(\w+) a owl:AnnotationProperty \.$", header, flags=re.M)
+    assert declared_in_doc == declared_by_export
