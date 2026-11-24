@@ -119,6 +119,18 @@ The system must automatically detect and classify physical schema patterns:
 
 **Type-detection ownership (2026-09-14, CDF unified-architecture paper Q-5).** This analyzer is the single owner of LPG type detection for the portfolio; `arango-ontoextract` and `arango-cypher-py` consume the `LABEL` / `GENERIC_WITH_TYPE` entries in CSI rather than re-detecting. Two tiers of candidate names: **tier-1** names (`type`, `_type`, `entityType`, `@type`, `entity_type`; edges `type`, `relation`, `relationship`, `relType`, `predicate`) are unambiguous and are accepted on coverage alone (≥ 2 observed values, broadly present), regardless of the distinct-count acceptance bound; **tier-2** names (`label`, `category`, `kind`, …) may hold a display value and must pass the full distribution gate. Edges carrying endpoint types directly (`_fromType` / `_toType` and variants) resolve per-relation domain/range without `DOCUMENT()` lookups.
 
+**Endpoint mirrors are not relation types** (0.14.1). On an edge collection, a candidate
+field whose observed values are, by at least 90% of their mass
+(`ENDPOINT_MIRROR_FRACTION`), the names of the collections its edges point between is
+never the discriminator, in either tier: it repeats what `_from` / `_to` already say.
+The IAM demo's `destination_sub_type` on `CAN_ACCESS` is one; read as a relation type it
+would split one dedicated edge collection into one relationship per target collection.
+The snapshot reads each edge collection's endpoint collections before it picks the
+edge's type field, so the snapshot and the baseline apply the rule alike; the baseline
+also takes a named graph's declared endpoints when none were sampled.
+**Implementation**: `type_detection.py` (`_mirrors_endpoint_collections`), `snapshot.py`
+(`_detect_edge_endpoint_collections`).
+
 Detection uses candidate type field analysis from `sample_field_value_counts` in the snapshot.
 
 The per-field distinct-value sampling behind detection is capped
