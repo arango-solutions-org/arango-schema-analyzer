@@ -464,23 +464,9 @@ def _fold_by_relation(rows: Iterable[Any], from_key: str, to_key: str, kind: str
     return {rt: {f"from_{kind}": sorted(f), f"to_{kind}": sorted(t)} for rt, (f, t) in sorted(folded.items())}
 
 
-def _detect_edge_endpoints(
-    db: StandardDatabase,
-    edge_collection_name: str,
-    *,
-    rel_type_field: str | None = None,
-    doc_type_info: dict[str, tuple[str, set[str]]],
-) -> dict[str, Any]:
-    """
-    Detect _from/_to endpoint collections and resolve entity types.
-
-    Three resolution strategies depending on what's available:
-    1. LPG endpoints (doc collections have type discriminators): DOCUMENT()
-       lookups resolve per-relation entity types.
-    2. Hybrid/PG endpoints with generic edge collection: COLLECT by relation
-       type + from/to collection, then map collection → entity type.
-    3. No relation type field: just report from/to collections.
-    """
+def _detect_edge_endpoint_collections(db: StandardDatabase, edge_collection_name: str) -> dict[str, list[str]] | None:
+    """The collections an edge collection's ``_from`` / ``_to`` point into, or
+    ``None`` when the query fails."""
     try:
         cursor = aql_execute(
             db,
@@ -501,8 +487,37 @@ def _detect_edge_endpoints(
                 if tc:
                     all_to_cols.add(tc)
     except Exception:
-        return {}
+        return None
+    return {"from_collections": sorted(all_from_cols), "to_collections": sorted(all_to_cols)}
 
+
+def _detect_edge_endpoints(
+    db: StandardDatabase,
+    edge_collection_name: str,
+    *,
+    rel_type_field: str | None = None,
+    doc_type_info: dict[str, tuple[str, set[str]]],
+    collections: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """
+    Detect _from/_to endpoint collections and resolve entity types.
+
+    ``collections`` is :func:`_detect_edge_endpoint_collections`' result when the
+    caller already has it; otherwise it is queried here. ``{}`` when that query fails.
+
+    Three resolution strategies depending on what's available:
+    1. LPG endpoints (doc collections have type discriminators): DOCUMENT()
+       lookups resolve per-relation entity types.
+    2. Hybrid/PG endpoints with generic edge collection: COLLECT by relation
+       type + from/to collection, then map collection → entity type.
+    3. No relation type field: just report from/to collections.
+    """
+    if collections is None:
+        collections = _detect_edge_endpoint_collections(db, edge_collection_name)
+        if collections is None:
+            return {}
+    all_from_cols = set(collections["from_collections"])
+    all_to_cols = set(collections["to_collections"])
     result: dict[str, Any] = {
         "from_collections": sorted(all_from_cols),
         "to_collections": sorted(all_to_cols),
@@ -1036,7 +1051,12 @@ def snapshot_physical_schema(
     # ── Phase 4: Detect edge endpoints and property fields ──────────────
     for entry in entries:
         is_edge = entry["type"] == "edge"
+        endpoint_collections: dict[str, list[str]] | None = None
         if is_edge:
+            # The endpoint collections come first: the picker drops a field that only
+            # repeats them (``ENDPOINT_MIRROR_FRACTION``), as the baseline's pick does.
+            endpoint_collections = _detect_edge_endpoint_collections(db, entry["name"])
+            entry["edge_endpoints"] = dict(endpoint_collections or {})
             best_field = _pick_best_type_field(entry, is_edge=True, max_distinct_values=max_distinct)
         else:
             best_field = doc_type_fields[entry["name"]]
@@ -1047,12 +1067,13 @@ def snapshot_physical_schema(
             if cooccurrence:
                 entry["label_cooccurrence"] = {best_field: cooccurrence}
 
-        if is_edge:
+        if is_edge and endpoint_collections is not None:
             entry["edge_endpoints"] = _detect_edge_endpoints(
                 db,
                 entry["name"],
                 rel_type_field=best_field,
                 doc_type_info=doc_type_info,
+                collections=endpoint_collections,
             )
 
         entry["observed_fields"] = _detect_observed_fields(
