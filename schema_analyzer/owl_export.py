@@ -425,13 +425,20 @@ def export_conceptual_model_as_jsonld(
     entities, rels, pm_entities, pm_rels = _mapped_schema(data)
     cardinality_by_rel = _cardinality_by_relationship(data)
 
+    def iri(name: str) -> str:
+        # A full IRI, as Turtle's ``:Local`` expands to. A bare local name is a relative
+        # IRI: ``@vocab`` covers only property and type names, so a processor resolved it
+        # against the document's location, and the JSON-LD named different resources
+        # than the Turtle (relational-schema-analyzer#63). ``@base`` would drop the "#".
+        return base_iri + _sanitize_iri_local(name)
+
     graph: list[dict[str, Any]] = []
     class_nodes: dict[str, dict[str, Any]] = {}
 
     for e in entities:
         name = e["name"]
         node: dict[str, Any] = {
-            "@id": _sanitize_iri_local(name),
+            "@id": iri(name),
             "@type": "owl:Class",
             "rdfs:label": name,
         }
@@ -441,14 +448,14 @@ def export_conceptual_model_as_jsonld(
         graph.append(node)
 
     for member, fam in _subclass_edges(data):
-        fam_id = _sanitize_iri_local(fam)
+        fam_id = iri(fam)
         if fam not in class_nodes:
             fam_node = {"@id": fam_id, "@type": "owl:Class", "rdfs:label": fam}
             class_nodes[fam] = fam_node
             graph.append(fam_node)
         member_node = class_nodes.get(member)
         if member_node is None:
-            member_node = {"@id": _sanitize_iri_local(member), "@type": "owl:Class"}
+            member_node = {"@id": iri(member), "@type": "owl:Class"}
             class_nodes[member] = member_node
             graph.append(member_node)
         member_node["rdfs:subClassOf"] = {"@id": fam_id}
@@ -462,22 +469,22 @@ def export_conceptual_model_as_jsonld(
             types.append("owl:FunctionalProperty")
         if inverse_functional:
             types.append("owl:InverseFunctionalProperty")
-        node = {"@id": _sanitize_iri_local(rtype), "@type": types, "rdfs:label": rtype}
+        node = {"@id": iri(rtype), "@type": types, "rdfs:label": rtype}
         if isinstance(r.get("fromEntity"), str) and r["fromEntity"]:
-            node["rdfs:domain"] = {"@id": _sanitize_iri_local(r["fromEntity"])}
+            node["rdfs:domain"] = {"@id": iri(r["fromEntity"])}
         if isinstance(r.get("toEntity"), str) and r["toEntity"]:
-            node["rdfs:range"] = {"@id": _sanitize_iri_local(r["toEntity"])}
+            node["rdfs:range"] = {"@id": iri(r["toEntity"])}
         if pattern:
             node["phys:observedCardinality"] = pattern
         if isinstance(r.get("inverseOf"), str) and r["inverseOf"]:
-            node["owl:inverseOf"] = {"@id": _sanitize_iri_local(r["inverseOf"])}
+            node["owl:inverseOf"] = {"@id": iri(r["inverseOf"])}
         for ap, value in _phys_annotations(pm_rels.get(rtype), _RELATIONSHIP_ANNOTATIONS):
             node[f"phys:{ap}"] = value
         graph.append(node)
 
     for local, label, domains, xsd, field, path, multi in _datatype_properties(data, reserved=_reserved_locals(data)):
-        dp: dict[str, Any] = {"@id": local, "@type": "owl:DatatypeProperty", "rdfs:label": label}
-        domain_ids = [{"@id": _sanitize_iri_local(d)} for d in domains]
+        dp: dict[str, Any] = {"@id": base_iri + local, "@type": "owl:DatatypeProperty", "rdfs:label": label}
+        domain_ids = [{"@id": iri(d)} for d in domains]
         dp["rdfs:domain"] = (
             domain_ids[0] if len(domain_ids) == 1 else {"@type": "owl:Class", "owl:unionOf": {"@list": domain_ids}}
         )

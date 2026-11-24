@@ -234,7 +234,10 @@ def test_owl_and_sparql_exports_mark_the_list_attribute(monkeypatch):
     assert ':questionsServed phys:multiValued "true" .' in ttl
     assert ":name phys:multiValued" not in ttl
 
-    nodes = {n["@id"]: n for n in export_conceptual_model_as_jsonld(analysis)["@graph"]}
+    from schema_analyzer.defaults import DEFAULT_OWL_BASE_IRI
+
+    graph = export_conceptual_model_as_jsonld(analysis)["@graph"]
+    nodes = {n["@id"].removeprefix(DEFAULT_OWL_BASE_IRI): n for n in graph}
     assert nodes["questionsServed"]["phys:multiValued"] == "true"
     assert "phys:multiValued" not in nodes["name"]
 
