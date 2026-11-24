@@ -210,14 +210,15 @@
       }
     },
     "RelationalColumn": {
-      "description": "One column of the relational source, with its SQL type.",
+      "description": "One column of the relational source, with its SQL type. `name` is the physical column. `property`, when present, is the key in the sibling `properties` that this column feeds (the final conceptual name, not the column), so a reader can follow a renamed column to its property and, with a publisher, to `propertyIds[property]`. A producer omits it when the column feeds no single property (a computed or multi-source value). Several columns may name the same property; that alone does not say how they combine.",
       "type": "object",
       "additionalProperties": true,
       "required": ["name", "sqlType"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "sqlType": { "type": "string", "minLength": 1 },
-        "nullable": { "type": "boolean" }
+        "nullable": { "type": "boolean" },
+        "property": { "type": "string", "minLength": 1 }
       }
     },
     "PropertyMapping": {

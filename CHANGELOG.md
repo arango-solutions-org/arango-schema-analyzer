@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **A relational column can name the property it feeds** (issue #42 follow-up). A
+  `columns[]` entry may carry an optional `property`: the key in the sibling `properties`
+  under its final conceptual name. `name` stays the physical SQL column, so a renamed
+  column can be followed to its property without matching names.
+  - **Ids:** with a publisher, the property's mapping id is `propertyIds[property]`;
+    there is no separate column id. Without a publisher the reference works the same.
+  - **Naming:** OWL naming renames `property` together with the property key and its
+    `propertyIds` entry. Column names, SQL types and ids are kept.
+  - **Refused:** `validate_csi` reports, and `to_csi` raises `INVALID_REQUEST` for, a
+    `property` that names no key in `properties`, on entity and relationship mappings.
+  - **Several columns may name one property.** That is schema-valid, but it doesn't say
+    how they combine. Producers omit `property` for computed, multi-source or ambiguous
+    values, and never infer it from `field` equal to the column name.
+  - **Compatibility:** optional and additive on `csiVersion` `"1"`. Documents without it
+    are unchanged, and output carrying it is valid for a 0.20.0 reader.
+
 ## 0.22.0 — 2026-11-23
 
 A minor version because every JSON-LD `@id` changes: the OWL JSON-LD export now names the

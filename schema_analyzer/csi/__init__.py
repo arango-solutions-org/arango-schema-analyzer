@@ -160,8 +160,8 @@ def to_csi(
 
     Raises :class:`SchemaAnalyzerError` (``INVALID_REQUEST``) rather than return a
     document :func:`validate_csi` would refuse: a malformed publisher URI, ids carried
-    from another publisher (never re-minted), or a ``propertyIds`` key whose property
-    is gone (never dropped silently).
+    from another publisher (never re-minted), a ``propertyIds`` key whose property
+    is gone (never dropped silently), or a ``columns[].property`` naming no property.
     """
     return _to_csi(
         analysis,
@@ -249,6 +249,12 @@ def _to_csi(
     if issues:
         raise SchemaAnalyzerError(
             "refusing to write a CSI document with invalid mapping ids: " + "; ".join(issues),
+            code="INVALID_REQUEST",
+        )
+    issues = _relational_reference_issues(doc)
+    if issues:
+        raise SchemaAnalyzerError(
+            "refusing to write a CSI document with dangling column references: " + "; ".join(issues),
             code="INVALID_REQUEST",
         )
     return doc
@@ -545,6 +551,37 @@ def _identity_issues(document: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _relational_reference_issues(document: dict[str, Any]) -> list[str]:
+    """What JSON Schema cannot check about ``columns[].property`` (issue #42).
+
+    A column's ``property`` names a key of the sibling ``properties`` on the same entity
+    or relationship mapping. Several columns may name one property; a column without
+    ``property`` claims no link. Checked on ``arangoPhysicalMapping`` only: the alias
+    must equal it (:func:`_identity_issues`).
+    """
+    if not isinstance(document, dict):
+        return []
+    physical = document.get("arangoPhysicalMapping")
+    issues: list[str] = []
+    for kind in ("entities", "relationships"):
+        specs = physical.get(kind) if isinstance(physical, dict) else None
+        for name, spec in specs.items() if isinstance(specs, dict) else []:
+            if not isinstance(spec, dict) or not isinstance(spec.get("columns"), list):
+                continue
+            raw_props = spec.get("properties")
+            props: dict[str, Any] = raw_props if isinstance(raw_props, dict) else {}
+            for i, column in enumerate(spec["columns"]):
+                if not isinstance(column, dict) or "property" not in column:
+                    continue
+                ref = column["property"]
+                where = f"arangoPhysicalMapping.{kind}.{name}.columns[{i}].property"
+                if not isinstance(ref, str) or ref == "":
+                    issues.append(f"{where} must be a non-empty string, not {ref!r}")
+                elif ref not in props:
+                    issues.append(f"{where} {ref!r} names no property in properties")
+    return issues
+
+
 def load_csi_schema_v1() -> dict[str, Any]:
     """Load the bundled CSI v1 JSON Schema."""
     from importlib.resources import files
@@ -556,13 +593,15 @@ def load_csi_schema_v1() -> dict[str, Any]:
 def validate_csi(document: dict[str, Any], *, naming: bool = True) -> list[str]:
     """Return a sorted list of CSI v1 validation error messages (empty = valid).
 
-    Checks the JSON Schema, the mapping alias and mapping ids (:func:`_identity_issues`)
-    and, unless ``naming=False``, the CC-12 OWL naming convention on the conceptual
-    layer (entities singular PascalCase, properties/relationships lowerCamel).
+    Checks the JSON Schema, the mapping alias and mapping ids (:func:`_identity_issues`),
+    column-to-property references (:func:`_relational_reference_issues`) and, unless
+    ``naming=False``, the CC-12 OWL naming convention on the conceptual layer (entities
+    singular PascalCase, properties/relationships lowerCamel).
     """
     validator = Draft202012Validator(load_csi_schema_v1())
     issues = [err.message for err in sorted(validator.iter_errors(document), key=str)]
     issues.extend(_identity_issues(document))
+    issues.extend(_relational_reference_issues(document))
     if naming:
         from .naming import naming_issues
 

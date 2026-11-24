@@ -676,6 +676,27 @@ r2g `export-csi`) emit these keys in their own repositories. **Implementation**:
 `_identity_issues`, `from_csi`), `csi/naming.py` (`propertyIds` follow renames),
 `tool.py` (`csiPublisherUri`).
 
+**CSI column-to-property reference (issue #42 follow-up) — _proposed_.** Additive on
+every CSI version; `csiVersion` is unchanged. A `columns[]` entry on an entity or
+relationship mapping may carry `property`: the key in the sibling `properties` that the
+column feeds, under its final conceptual name. `name` stays the physical SQL column, so
+a reader follows a renamed column (`cust_full_name` → `fullName`) without matching names.
+The reference needs no publisher; with one, the property's mapping id is
+`propertyIds[property]`, so a column carries no id of its own. OWL naming renames the
+reference together with the property key and its `propertyIds` entry; the column name,
+`sqlType` and every id are kept. Several columns may name one property: the schema allows
+it, and it says only that each feeds the property, not how they combine, so it is not
+complete lineage. A producer sets `property` only when the column alone feeds that one
+property, and omits it for a computed, multi-source or otherwise ambiguous value; it
+never infers the link from `field` equal to the column name. `to_csi` passes `property`
+through and never fills it in. `validate_csi` refuses, and `to_csi` raises
+`INVALID_REQUEST` for, a `property` naming no key in `properties`. Producers (RSA, r2g
+`export-csi`) emit it in their own repositories; r2g's schema copy follows a release.
+The field name and the many-columns-to-one-property semantics await maintainer
+confirmation. **Implementation**: `csi/v1/csi.schema.json` (`RelationalColumn.property`),
+`csi/__init__.py` (`_relational_reference_issues`, `to_csi`, `validate_csi`),
+`csi/naming.py` (references follow renames), `tests/test_csi_column_property.py`.
+
 #### **6.1. Additional Mapping Styles**
 - `TRIPLE` — _Shipped in 0.7.0_ as an additive annotation
   (`physicalMapping[*].triple = {"style":"TRIPLE"}` + `tripleCandidate`) driven
