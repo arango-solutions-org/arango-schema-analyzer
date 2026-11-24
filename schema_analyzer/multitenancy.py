@@ -96,16 +96,6 @@ def _user_collections(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _entity_property_names(entity: dict[str, Any]) -> set[str]:
-    """Set of property names declared on a conceptual entity mapping.
-
-    Thin wrapper over :func:`schema_analyzer.utils.entity_property_names`
-    that returns a set rather than a list (multitenancy detection only
-    needs membership tests, never order).
-    """
-    return set(entity_property_names(entity))
-
-
 def _collection_to_entity_index(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Map ``collection name → entity-mapping dict`` for the user
     entities in ``physicalMapping.entities``.
@@ -329,7 +319,7 @@ def _detect_discriminator_field(
     for entry in user_cols:
         col_name = entry["name"]
         ent = col_to_entity.get(col_name) or {}
-        declared = _entity_property_names(ent)
+        declared = set(entity_property_names(ent))
         match = _candidate_field_match(declared, discriminator_fields)
         if match is None:
             continue
