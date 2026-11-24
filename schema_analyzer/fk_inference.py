@@ -26,7 +26,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, TypeGuard
 
 from .defaults import (
     FK_ALLOW_COMPOSITE,
@@ -123,10 +123,19 @@ class InferenceOptions:
     generic_key_names: frozenset[str] = FK_GENERIC_KEY_NAMES
     max_candidates_per_field: int = FK_MAX_CANDIDATES_PER_FIELD
     allow_composite: bool = FK_ALLOW_COMPOSITE
-    #: Off by default. Containment probing is the first cross-collection DB cost in this
-    #: analyzer and scales with candidate count, not collection count (PRD §6.2).
-    sample_overlap: bool = False
+    #: ``None`` (the default) probes whenever a sampler is passed; ``False`` turns probing
+    #: off even with one. Converged with RSA (relational-schema-analyzer#60): a sampler
+    #: passed on its own used to be ignored. Probing stays off by default in an analysis,
+    #: because the analyzer builds a sampler only when ``sample_fk_overlap`` is set:
+    #: containment probing is the first cross-collection DB cost here and scales with
+    #: candidate count, not collection count (PRD §6.2).
+    sample_overlap: bool | None = None
     overlap_veto_on_zero: bool = FK_OVERLAP_VETO_ON_ZERO
+
+
+def _probes(sampler: Sampler | None, opts: InferenceOptions) -> TypeGuard[Sampler]:
+    """Whether candidates get a containment probe: a sampler, and ``sample_overlap`` not ``False``."""
+    return sampler is not None and opts.sample_overlap is not False
 
 
 def infer_foreign_keys(
@@ -161,7 +170,7 @@ def infer_foreign_keys(
         composite = _find_composite_candidates(single)
 
     all_candidates = single + composite
-    if sampler is not None and opts.sample_overlap:
+    if _probes(sampler, opts):
         sampled = [_apply_sampler(c, sampler, opts) for c in all_candidates]
         all_candidates = [c for c in sampled if c is not None]
 
@@ -667,7 +676,7 @@ def apply_to_analysis(
         "status": "ok",
         "candidates": len(candidates),
         "added": added,
-        "sampled": bool(sampler is not None and (options or InferenceOptions()).sample_overlap),
+        "sampled": _probes(sampler, options or InferenceOptions()),
     }
     if unmapped:
         # Never silent: a candidate whose endpoint has no COLLECTION-style entity is dropped,

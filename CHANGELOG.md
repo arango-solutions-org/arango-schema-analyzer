@@ -63,6 +63,19 @@ analysis already uses a key now reserved for mapping ids (see below).
   left to the screen, which is asked about that field with those values. A screen that
   picks every field it does not recognise will now pick `_key` too.
 
+### Changed
+- **Passing a sampler to `infer_foreign_keys` turns containment probing on.**
+  `InferenceOptions.sample_overlap` now defaults to `None`, meaning "probe when a sampler
+  is passed". Before, the default was `False`, so a sampler passed on its own was
+  silently ignored. `False` still turns probing off with a sampler present.
+  - **Analyses are unchanged.** The analyzer builds a sampler only when
+    `sample_fk_overlap` (`analysisOptions.sampleForeignKeyOverlap`) is set, so probing
+    stays off by default (PRD §6.2), and a new test holds it there.
+  - **Who sees a difference:** only direct callers of `infer_foreign_keys` or
+    `apply_to_analysis` who pass a sampler without setting the flag.
+  - Ported from relational-schema-analyzer 0.13.0 (its #60) so the two engines keep
+    the same default (#75).
+
 ### Fixed
 - **The default no-LLM path now annotates tenant scope.** `analyze_physical_schema(db)`
   without an LLM provider kept its own copy of the enrichment-pass list, which lacked

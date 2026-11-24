@@ -8,6 +8,7 @@ No database: `analyze_physical_schema` accepts a prepared `_snapshot`, so the wh
 enrichment path runs against a hand-built one.
 """
 
+import copy
 from typing import Any
 
 import pytest
@@ -97,6 +98,37 @@ def test_status_is_reported():
     assert status["status"] == "ok"
     assert status["added"] >= 3
     assert status["sampled"] is False  # no db handle, so no containment probe
+
+
+@pytest.mark.parametrize("sample_fk_overlap", [False, True])
+def test_containment_probing_is_opt_in_even_with_a_database(sample_fk_overlap, monkeypatch):
+    """Probing is a cross-collection DB cost (PRD §6.2), so an analysis does it only when
+    ``sample_fk_overlap`` is set. Passing a sampler turns probing on in ``fk_inference``,
+    so the analyzer must not build one otherwise, even when it holds a database handle."""
+    built: list = []
+
+    class _Sampler:
+        def __init__(self, db):
+            built.append(db)
+
+        def __call__(self, *args):
+            return None
+
+        def status(self):
+            return {"status": "ok"}
+
+    monkeypatch.setattr("schema_analyzer.fk_sampler.ArangoValueSampler", _Sampler)
+    analyzer = AgenticSchemaAnalyzer(detect_foreign_keys=True, sample_fk_overlap=sample_fk_overlap)
+    analyzer._db = object()
+    plain = analyze(chinook_snapshot())
+    data = {
+        "conceptualSchema": copy.deepcopy(plain.conceptual_schema),
+        "physicalMapping": copy.deepcopy(plain.physical_mapping),
+    }
+    status = analyzer._detect_attribute_relationships(data, chinook_snapshot())
+
+    assert built == ([analyzer._db] if sample_fk_overlap else [])
+    assert status is not None and status["sampled"] is sample_fk_overlap
 
 
 def test_detection_is_recorded_as_a_pattern():

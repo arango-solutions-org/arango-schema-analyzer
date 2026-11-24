@@ -856,17 +856,14 @@ class AgenticSchemaAnalyzer:
         """
         if not self.detect_foreign_keys:
             return None
-        from .fk_inference import InferenceOptions, apply_to_analysis
+        from .fk_inference import apply_to_analysis
         from .fk_sampler import ArangoValueSampler
 
-        sampler = None
-        options = InferenceOptions()
-        if self._db is not None and self.sample_fk_overlap:
-            sampler = ArangoValueSampler(self._db)
-            options = InferenceOptions(sample_overlap=True)
+        # Passing a sampler is what turns probing on, so this is the opt-in.
+        sampler = ArangoValueSampler(self._db) if self._db is not None and self.sample_fk_overlap else None
 
         try:
-            status = apply_to_analysis(data, snapshot, sampler=sampler, options=options)
+            status = apply_to_analysis(data, snapshot, sampler=sampler)
         except Exception as err:  # noqa: BLE001 - enrichment must never fail an analysis
             logger.warning("foreign-key detection failed: %s", err)
             return {"status": "degraded", "reason": str(err)}

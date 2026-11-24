@@ -189,15 +189,29 @@ def _sampler(mapping, default=None):
     return sample
 
 
-def test_sampling_is_off_by_default():
-    calls = []
-
+def _recording(calls: list) -> object:
     def sample(lc, lf, fc, ff):
         calls.append((lc, lf))
         return 1.0
 
-    infer_foreign_keys(chinook(), sampler=sample)
-    assert calls == [], "containment probing must be opt-in (cross-collection DB cost)"
+    return sample
+
+
+def test_a_sampler_on_its_own_probes():
+    """Passing a sampler is the opt-in (converged with RSA #60); it used to be ignored."""
+    calls: list = []
+    infer_foreign_keys(chinook(), sampler=_recording(calls))
+    assert ("Album", "ArtistId") in calls
+
+
+def test_sample_overlap_false_still_turns_a_sampler_off():
+    calls: list = []
+    infer_foreign_keys(chinook(), options=InferenceOptions(sample_overlap=False), sampler=_recording(calls))
+    assert calls == []
+
+
+def test_sample_overlap_without_a_sampler_changes_nothing():
+    assert infer_foreign_keys(chinook(), options=InferenceOptions(sample_overlap=True)) == infer_foreign_keys(chinook())
 
 
 def test_high_containment_raises_confidence():
