@@ -349,6 +349,11 @@ def apply_owl_naming(
             prop_ids = spec.get("propertyIds")
             if isinstance(prop_ids, dict):
                 spec["propertyIds"] = {prop_renames.get(k, k): v for k, v in prop_ids.items()}
+            # So do column references; the column's own name is the physical one and stays.
+            columns = spec.get("columns")
+            for column in columns if isinstance(columns, list) else []:
+                if isinstance(column, dict) and isinstance(column.get("property"), str):
+                    column["property"] = prop_renames.get(column["property"], column["property"])
 
     # Physical-mapping entity keys follow the conceptual rename; the physical
     # collection name stays what it is.

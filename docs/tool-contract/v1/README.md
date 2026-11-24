@@ -55,7 +55,10 @@ The tool is designed to be callable via:
   round trip, and not across a fresh analysis that renames an entity or property
   (carrying ids across a rename is issue #52). To move a document to a new
   publisher on purpose, remove its mapping ids and `metadata.publisherUri`, then
-  supply the new `csiPublisherUri`
+  supply the new `csiPublisherUri`. A relational `columns[]` entry may carry
+  `property`, the key in the sibling `properties` the column feeds (proposed, see
+  the PRD); it is passed through as given, never inferred, and the request fails
+  with `INVALID_REQUEST` when it is not a non-empty string naming such a key
 
 ## Request / Response
 
