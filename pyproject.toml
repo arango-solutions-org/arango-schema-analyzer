@@ -1,6 +1,6 @@
 [project]
 name = "arangodb-schema-analyzer"
-version = "0.21.0"
+version = "0.22.0"
 description = "Agentic schema analyzer for ArangoDB: conceptual model + conceptual-to-physical mapping for transpilers."
 readme = "README.md"
 requires-python = ">=3.10"
