@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **JSON-LD ids are full IRIs, so the JSON-LD and Turtle exports name the same
+  resources.** `export_conceptual_model_as_jsonld` wrote every `@id` as a bare local name
+  (`"@id": "Author"`), including the ids inside `rdfs:domain`, `rdfs:range`,
+  `rdfs:subClassOf`, `owl:inverseOf` and `owl:unionOf`. A bare name is a relative IRI.
+  `@vocab` covers only property and type names, so a JSON-LD processor resolved the id
+  against the document's own location (rdflib: `file:///…/Author`), and none of its
+  resources matched Turtle's `http://arangodb.com/schema/hybrid#Author`. `@base`
+  couldn't fix it, because resolving against an IRI ending in `#` drops the fragment.
+  - **Now:** ids are `base_iri` + the local name. Prefixed names such as `xsd:string`
+    are unchanged.
+  - **Output change:** every JSON-LD `@id` changes, and nothing else in the JSON-LD
+    does. Turtle is unchanged.
+  - A new test checks that the two exports parse to the same RDF graph, with the
+    JSON-LD read against an unrelated base.
+  - Same fix as relational-schema-analyzer#63, so the two exporters stay aligned.
+
 ## 0.21.0 — 2026-11-23
 
 A minor version. What's new:

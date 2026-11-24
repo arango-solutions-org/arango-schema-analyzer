@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
+from schema_analyzer.defaults import DEFAULT_OWL_BASE_IRI
 from schema_analyzer.owl_export import (
     export_conceptual_model_as_jsonld,
     export_conceptual_model_as_owl_turtle,
@@ -128,12 +131,12 @@ def test_owl_inverse_of():
 def test_jsonld_export_structure():
     doc = export_conceptual_model_as_jsonld(_RICH)
     assert "@context" in doc and "@graph" in doc
-    by_id = {n["@id"]: n for n in doc["@graph"]}
+    by_id = _by_local(doc)
     assert by_id["IBEXDocument"]["@type"] == "owl:Class"
-    assert by_id["IBEXDocument"]["rdfs:subClassOf"] == {"@id": "Document"}
+    assert by_id["IBEXDocument"]["rdfs:subClassOf"] == {"@id": _BASE + "Document"}
     assert "owl:FunctionalProperty" in by_id["AUTHORED_BY"]["@type"]
-    assert by_id["AUTHORED_BY"]["owl:inverseOf"] == {"@id": "WROTE"}
-    assert by_id["WROTE"]["rdfs:domain"] == {"@id": "Author"}
+    assert by_id["AUTHORED_BY"]["owl:inverseOf"] == {"@id": _BASE + "WROTE"}
+    assert by_id["WROTE"]["rdfs:domain"] == {"@id": _BASE + "Author"}
 
 
 def test_owl_tool_op_jsonld_format():
@@ -235,7 +238,7 @@ def test_turtle_declares_every_phys_annotation_it_writes():
 
 
 def test_jsonld_carries_a_relationships_type_discriminator():
-    by_id = {n["@id"]: n for n in export_conceptual_model_as_jsonld(_EVERY_ANNOTATION)["@graph"]}
+    by_id = _by_local(export_conceptual_model_as_jsonld(_EVERY_ANNOTATION))
     assert by_id["WROTE"]["phys:typeField"] == "relation"
     assert by_id["WROTE"]["phys:typeValue"] == "wrote"
     assert "phys:typeField" not in by_id["FOLLOWS"]
@@ -243,7 +246,7 @@ def test_jsonld_carries_a_relationships_type_discriminator():
 
 def test_jsonld_and_turtle_carry_the_same_phys_annotations():
     jsonld = {
-        (node["@id"], key.removeprefix("phys:"), value)
+        (node["@id"].removeprefix(_BASE), key.removeprefix("phys:"), value)
         for node in export_conceptual_model_as_jsonld(_EVERY_ANNOTATION)["@graph"]
         for key, value in node.items()
         if key.startswith("phys:")
@@ -303,6 +306,14 @@ def _graph(ttl: str):
     g = rdflib.Graph()
     g.parse(data=ttl, format="turtle")
     return g
+
+
+_BASE = DEFAULT_OWL_BASE_IRI
+
+
+def _by_local(doc: dict) -> dict:
+    """JSON-LD nodes keyed by local name; their ``@id`` is the full IRI."""
+    return {n["@id"].removeprefix(_BASE): n for n in doc["@graph"]}
 
 
 def _ns():
@@ -384,13 +395,13 @@ def test_a_sanitized_name_maps_back_to_its_field():
 
 def test_the_jsonld_export_carries_the_same_datatype_properties():
     doc = export_conceptual_model_as_jsonld(_FIELDS)
-    by_id = {n["@id"]: n for n in doc["@graph"]}
+    by_id = _by_local(doc)
     assert by_id["position"]["@type"] == "owl:DatatypeProperty"
-    assert by_id["position"]["rdfs:domain"] == {"@id": "Chunk"}
+    assert by_id["position"]["rdfs:domain"] == {"@id": _BASE + "Chunk"}
     assert by_id["position"]["rdfs:range"] == {"@id": "xsd:integer"}
     assert by_id["content"]["rdfs:domain"] == {
         "@type": "owl:Class",
-        "owl:unionOf": {"@list": [{"@id": "Chunk"}, {"@id": "Document"}]},
+        "owl:unionOf": {"@list": [{"@id": _BASE + "Chunk"}, {"@id": _BASE + "Document"}]},
     }
     assert by_id["pages"]["phys:attributeName"] == "page_count"
     assert "file_name" not in by_id and by_id["PART_OF"]["@type"] != "owl:DatatypeProperty"
@@ -409,3 +420,40 @@ def test_the_owl_design_doc_declares_every_annotation_property():
     header = export_conceptual_model_as_owl_turtle(_SAMPLE)
     declared_by_export = re.findall(r"^phys:(\w+) a owl:AnnotationProperty \.$", header, flags=re.M)
     assert declared_in_doc == declared_by_export
+
+
+# ---------------------------------------------------------------------------
+# JSON-LD names the same resources as Turtle (relational-schema-analyzer#63)
+# ---------------------------------------------------------------------------
+
+
+def _without_header(graph):
+    """The graph minus Turtle's header: the ontology node and annotation-property declarations."""
+    import rdflib
+    from rdflib import OWL, RDF
+
+    header = {s for s, _, o in graph.triples((None, RDF.type, None)) if o in (OWL.Ontology, OWL.AnnotationProperty)}
+    out = rdflib.Graph()
+    for triple in graph:
+        if triple[0] not in header:
+            out.add(triple)
+    return out
+
+
+@pytest.mark.parametrize("analysis", [_RICH, _EVERY_ANNOTATION, _FIELDS], ids=["rich", "annotations", "fields"])
+def test_jsonld_and_turtle_are_the_same_graph(analysis):
+    """JSON-LD ``@id`` values were bare local names: relative IRIs, resolved against the
+    document's location, so none of its resources were Turtle's. Parsed against an
+    unrelated base, every id has to be absolute already for the graphs to match."""
+    import json
+
+    import rdflib
+    from rdflib.compare import isomorphic
+
+    jsonld = rdflib.Graph().parse(
+        data=json.dumps(export_conceptual_model_as_jsonld(analysis)), format="json-ld", publicID="urn:x-elsewhere:"
+    )
+    turtle = _graph(export_conceptual_model_as_owl_turtle(analysis))
+    assert len(jsonld) > 0
+    assert isomorphic(_without_header(turtle), _without_header(jsonld))
+    assert not any(str(s).startswith("urn:x-elsewhere:") for s in jsonld.subjects())

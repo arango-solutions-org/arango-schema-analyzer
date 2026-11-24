@@ -208,6 +208,9 @@ def test_labels_style_exports_name_the_labels_field():
     assert ':Account phys:labelValue "Account" .' in ttl
     assert "phys:labelsField a owl:AnnotationProperty ." in ttl
     assert "phys:labelValue a owl:AnnotationProperty ." in ttl
-    nodes = {n["@id"]: n for n in export_conceptual_model_as_jsonld(analysis)["@graph"]}
+    from schema_analyzer.defaults import DEFAULT_OWL_BASE_IRI
+
+    graph = export_conceptual_model_as_jsonld(analysis)["@graph"]
+    nodes = {n["@id"].removeprefix(DEFAULT_OWL_BASE_IRI): n for n in graph}
     assert nodes["Account"]["phys:labelsField"] == "labels"
     assert nodes["Account"]["phys:labelValue"] == "Account"

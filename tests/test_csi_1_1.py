@@ -317,7 +317,10 @@ def test_owl_export_writes_attribute_path_for_a_nested_value():
     assert "phys:attributePath a owl:AnnotationProperty ." in ttl
     assert ':nick phys:attributeName "nk" .' in ttl  # a one-level path is just a field
 
-    nodes = {n["@id"]: n for n in export_conceptual_model_as_jsonld(analysis)["@graph"]}
+    from schema_analyzer.defaults import DEFAULT_OWL_BASE_IRI
+
+    graph = export_conceptual_model_as_jsonld(analysis)["@graph"]
+    nodes = {n["@id"].removeprefix(DEFAULT_OWL_BASE_IRI): n for n in graph}
     assert json.loads(nodes["address_city"]["phys:attributePath"]) == ["address", "city"]
     assert "phys:attributeName" not in nodes["address_city"]
 
