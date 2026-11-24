@@ -1,10 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 — 2026-11-23
 
-Additive on CSI version `"1"` (issue #42; CDF `unified-ontology-mapping-architecture.md`
-§8.1). Without a publisher URI, `to_csi` writes the same document as before, unless the
-analysis already uses a key now reserved for mapping ids (see below).
+A minor version. What's new:
+- CSI version `"1"` gains relational details, the generalized `physicalMapping` key and
+  publisher-minted mapping ids (issue #42; CDF `unified-ontology-mapping-architecture.md`
+  §8.1).
+- `screen_field_values` can withhold document keys.
+- A sampler passed on its own to `infer_foreign_keys` now probes.
+
+Without a publisher URI, `to_csi` writes the same document as before, unless the analysis
+already uses a key now reserved for mapping ids (see below).
+
+Some default-path output changes, each a fix listed under Fixed:
+- the no-LLM path now annotates tenant scope;
+- the two OWL exports carry the same `phys:` annotations;
+- the snapshot no longer splits an edge collection by a field that only repeats its
+  endpoints.
+
+Analyses with default options probe no more than before.
 
 ### Added
 - **`physicalMapping`, the generalized name of `arangoPhysicalMapping`.** The same object
