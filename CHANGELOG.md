@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 — 2026-11-23
+
+A minor version because every JSON-LD `@id` changes: the OWL JSON-LD export now names the
+same resources as the Turtle export. Turtle and everything else are unchanged.
 
 ### Fixed
 - **JSON-LD ids are full IRIs, so the JSON-LD and Turtle exports name the same
